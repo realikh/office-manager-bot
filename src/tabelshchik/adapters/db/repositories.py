@@ -735,3 +735,55 @@ class SqlMaintenance(SqlRepository):
                 destination.close()
         finally:
             raw.close()
+
+
+# ------------------------------------------------------------------------ ai and mood
+
+
+class SqlUsageStore(SqlRepository):
+    """Per-day AI counters.
+
+    Two limits, for two different worries: a per-person one so nobody monopolises the
+    bot, and a global one that exists purely as a cost stop-loss.
+    """
+
+    def used_today(self, user_id: int, day: date) -> int:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.AiUsage, (user_id, day))
+            return row.count if row else 0
+
+    def total_today(self, day: date) -> int:
+        with session_scope(self._sessions) as session:
+            counts = session.scalars(
+                select(models.AiUsage.count).where(models.AiUsage.day == day)
+            ).all()
+            return sum(counts)
+
+    def record(self, user_id: int, day: date, *, tokens: int = 0) -> None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.AiUsage, (user_id, day))
+            if row is None:
+                row = models.AiUsage(user_id=user_id, day=day, count=0, tokens=0)
+                session.add(row)
+            row.count += 1
+            row.tokens += tokens
+
+
+class SqlMoodStore(SqlRepository):
+    """Today's mood, stored so a restart mid-afternoon does not change the bot's
+    personality halfway through the day, and so an admin override sticks."""
+
+    def mood_for(self, office_id: str, day: date) -> str | None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.BotMood, (office_id, day))
+            return row.mood if row else None
+
+    def set_mood(self, office_id: str, day: date, mood: str, *, by: str = "roll") -> None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.BotMood, (office_id, day))
+            if row is None:
+                row = models.BotMood(office_id=office_id, day=day, mood=mood, chosen_by=by)
+                session.add(row)
+            else:
+                row.mood = mood
+                row.chosen_by = by

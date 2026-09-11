@@ -30,6 +30,34 @@ class SchedulePolicy:
 
 
 @dataclass(frozen=True, slots=True)
+class TempoPolicy:
+    """When to nag about filling in Tempo."""
+
+    enabled: bool = True
+    url: str = ""
+    #: Weekdays for the recurring nag, 0 = Monday.
+    weekly_weekdays: frozenset[int] = frozenset({4})
+    #: Day of the month for the early warning; rolls forward if it is not a working day,
+    #: and does not fire retroactively if a working day has already passed.
+    warning_day: int = 23
+    #: The month-end nag lands on the last *working* day, not the last calendar day.
+    month_end: bool = True
+    pin: bool = True
+
+
+@dataclass(frozen=True, slots=True)
+class ChatPolicy:
+    enabled: bool = True
+    per_user_daily_limit: int = 10
+    global_daily_limit: int = 200
+    max_tokens: int = 400
+    temperature: float = 0.9
+    triggers: frozenset[str] = frozenset({"mention", "reply", "private"})
+    #: How much of the person's own schedule to put in front of the model.
+    upcoming_days: int = 5
+
+
+@dataclass(frozen=True, slots=True)
 class SilentPolicy:
     """Quiet hours, resolved per weekday. Silent still sends — it just does not buzz."""
 
