@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
@@ -470,3 +470,113 @@ def test_the_real_offices_seed_and_plan(sessions, real_config) -> None:
     )
     # Fixed-schedule-only: there is nothing to draft, so the solver short-circuits.
     assert not pine_instance.needs_draft
+
+
+# ------------------------------------------------------------------------ retention
+
+
+def _sim_records(days: int, start: date):
+    from datetime import timedelta
+
+    return [day_record(start + timedelta(days=offset)) for offset in range(days)]
+
+
+def test_pruning_folds_history_into_a_checkpoint_before_deleting(sessions) -> None:
+    """The decisive retention property: bounding storage must cost no fairness history."""
+    from tabelshchik.adapters.clock import FixedClock
+    from tabelshchik.adapters.db.repositories import SqlMaintenance
+    from tabelshchik.application.prune_history import RetentionPolicy, prune_history
+
+    seed(sessions)
+    schedule = SqlScheduleStore(sessions)
+    ledger = SqlLedgerStore(sessions)
+
+    start = date(2026, 1, 5)
+    records = _sim_records(200, start)
+    schedule.apply(
+        "ovest",
+        make_diff(added=[assignment(record.day, "anya") for record in records], days=records),
+        generation_id=1,
+    )
+
+    today = start + timedelta(days=210)
+    before = ledger.rebuild("ovest", upto=today)
+
+    prune_history(
+        offices=SqlOfficeStore(sessions),
+        ledger=ledger,
+        maintenance=SqlMaintenance(sessions),
+        clock=FixedClock(datetime.combine(today, datetime.min.time())),
+        policy=RetentionPolicy(schedule_months=3),
+    )
+
+    after = ledger.rebuild("ovest", upto=today)
+    assert after == before
+
+
+def test_pruning_actually_removes_rows(sessions) -> None:
+    from tabelshchik.adapters.clock import FixedClock
+    from tabelshchik.adapters.db.repositories import SqlMaintenance
+    from tabelshchik.application.prune_history import RetentionPolicy, prune_history
+
+    seed(sessions)
+    start = date(2026, 1, 5)
+    records = _sim_records(200, start)
+    SqlScheduleStore(sessions).apply(
+        "ovest",
+        make_diff(added=[assignment(record.day, "anya") for record in records], days=records),
+        generation_id=1,
+    )
+    today = start + timedelta(days=210)
+
+    report = prune_history(
+        offices=SqlOfficeStore(sessions),
+        ledger=SqlLedgerStore(sessions),
+        maintenance=SqlMaintenance(sessions),
+        clock=FixedClock(datetime.combine(today, datetime.min.time())),
+        policy=RetentionPolicy(schedule_months=3),
+    )
+
+    assert report.assignments_removed > 100
+    assert report.checkpointed > 100
+    remaining = SqlScheduleStore(sessions).days_between("ovest", start, today)
+    assert all(snapshot.day >= report.watermark for snapshot in remaining)
+
+
+def test_pruning_never_touches_people_offices_or_templates(sessions) -> None:
+    from tabelshchik.adapters.clock import FixedClock
+    from tabelshchik.adapters.db.repositories import SqlMaintenance
+    from tabelshchik.application.prune_history import RetentionPolicy, prune_history
+
+    seed(sessions)
+    prune_history(
+        offices=SqlOfficeStore(sessions),
+        ledger=SqlLedgerStore(sessions),
+        maintenance=SqlMaintenance(sessions),
+        clock=FixedClock(datetime(2030, 1, 1)),
+        policy=RetentionPolicy(schedule_months=1),
+    )
+
+    offices = SqlOfficeStore(sessions)
+    assert len(offices.employees("ovest")) == 4
+    assert offices.get_office("ovest") is not None
+    context = offices.planning_context("ovest", start=date(2030, 1, 6), end=date(2030, 1, 6))
+    assert context.template.desks_on(0) == 2
+
+
+def test_a_backup_produces_a_readable_copy(sessions, tmp_path) -> None:
+    """Nightly off-box backups are only worth having if they actually open."""
+    import sqlite3
+
+    from tabelshchik.adapters.db.repositories import SqlMaintenance
+
+    seed(sessions)
+    destination = tmp_path / "backup.db"
+    SqlMaintenance(sessions).backup_to(str(destination))
+
+    connection = sqlite3.connect(destination)
+    try:
+        rows = connection.execute("SELECT id FROM office").fetchall()
+    finally:
+        connection.close()
+    assert rows == [("ovest",)]

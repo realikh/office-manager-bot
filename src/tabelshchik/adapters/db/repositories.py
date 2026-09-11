@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import date, datetime
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from tabelshchik.adapters.db import models
@@ -647,3 +647,91 @@ class SqlAuditLog(SqlRepository):
                     at=datetime.now(),
                 )
             )
+
+
+# ----------------------------------------------------------------------- maintenance
+
+
+def _rows_affected(result: object) -> int:
+    return int(getattr(result, "rowcount", 0) or 0)
+
+
+class SqlMaintenance(SqlRepository):
+    """Deletion and housekeeping.
+
+    Nothing here touches employees, offices, weekly templates, the ledger or its
+    checkpoints: bounding the database must never cost the state the bot reasons from.
+    """
+
+    def delete_schedule_before(self, office_id: str, watermark: date) -> int:
+        with session_scope(self._sessions) as session:
+            removed = _rows_affected(
+                session.execute(
+                    delete(models.Assignment)
+                    .where(models.Assignment.office_id == office_id)
+                    .where(models.Assignment.day < watermark)
+                )
+            )
+            session.execute(
+                delete(models.ScheduleDay)
+                .where(models.ScheduleDay.office_id == office_id)
+                .where(models.ScheduleDay.day < watermark)
+            )
+            session.execute(
+                delete(models.GenerationRun)
+                .where(models.GenerationRun.office_id == office_id)
+                .where(models.GenerationRun.horizon_end < watermark)
+            )
+            return removed
+
+    def delete_job_runs_before(self, cutoff: datetime) -> int:
+        with session_scope(self._sessions) as session:
+            return _rows_affected(
+                session.execute(delete(models.JobRun).where(models.JobRun.scheduled_for < cutoff))
+            )
+
+    def delete_audit_before(self, cutoff: datetime) -> int:
+        with session_scope(self._sessions) as session:
+            return _rows_affected(
+                session.execute(delete(models.AuditLog).where(models.AuditLog.at < cutoff))
+            )
+
+    def delete_ai_usage_before(self, cutoff: date) -> int:
+        with session_scope(self._sessions) as session:
+            return _rows_affected(
+                session.execute(delete(models.AiUsage).where(models.AiUsage.day < cutoff))
+            )
+
+    def delete_absences_before(self, cutoff: date) -> int:
+        with session_scope(self._sessions) as session:
+            return _rows_affected(
+                session.execute(delete(models.Absence).where(models.Absence.end_date < cutoff))
+            )
+
+    def database_bytes(self) -> int:
+        with session_scope(self._sessions) as session:
+            page_size = session.execute(text("PRAGMA page_size")).scalar() or 0
+            page_count = session.execute(text("PRAGMA page_count")).scalar() or 0
+            return int(page_size) * int(page_count)
+
+    def vacuum(self) -> None:
+        # VACUUM cannot run inside a transaction, so it needs its own bare connection.
+        engine = self._sessions.kw["bind"]
+        with engine.connect().execution_options(isolation_level="AUTOCOMMIT") as connection:
+            connection.execute(text("VACUUM"))
+
+    def backup_to(self, path: str) -> None:
+        """A consistent copy, taken with SQLite's own backup API rather than by copying
+        the file out from under a live writer."""
+        import sqlite3
+
+        engine = self._sessions.kw["bind"]
+        raw = engine.raw_connection()
+        try:
+            destination = sqlite3.connect(path)
+            try:
+                raw.driver_connection.backup(destination)
+            finally:
+                destination.close()
+        finally:
+            raw.close()
