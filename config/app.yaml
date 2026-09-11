@@ -43,16 +43,19 @@ retention:
   jobRunsDays: 90
   auditDays: 180
   aiUsageDays: 60
+  chatMessagesDays: 7       # raw messages, kept only to rebuild a reply chain
 
 personality:
   enabled: true
   rotation: daily           # one mood per office per day
   moods:
+    # Mostly toxic. `sad` and `depressive` are rare on purpose — they read as flat
+    # rather than funny, and one day in five of them makes the bot merely miserable.
     toxic: { weight: 55 }
-    fun: { weight: 15 }
-    happy: { weight: 10 }
-    sad: { weight: 10 }
-    depressive: { weight: 10 }
+    fun: { weight: 25 }
+    happy: { weight: 12 }
+    sad: { weight: 5 }
+    depressive: { weight: 3 }
   safeMode: false           # forces `fun` everywhere, immediately
   bannedTerms: []
 
@@ -60,12 +63,22 @@ ai:
   enabled: true
   model: gpt-4.1-nano       # cheapest nano-class chat model; one line to change
   maxTokens: 400
-  temperature: 0.9
+  temperature: 1.0
   perUserDailyLimit: 10
   globalDailyLimit: 200     # cost stop-loss
   triggers: [mention, reply, private]
   requestTimeoutSeconds: 20
   maxRetries: 2
+  # Conversation context. Every value is a hard ceiling, so the worst-case prompt size
+  # is known in advance rather than discovered on the invoice.
+  chat:
+    replyDepth: 10          # levels of reply chain to follow
+    replyChars: 1200        # ceiling on the whole quoted chain
+    messageChars: 200       # ceiling on any one quoted message
+    remember: true          # may the model write facts down at all
+    generalFacts: 20        # ring buffer, per office
+    personalFacts: 10       # ring buffer, per employee
+    factChars: 120
 
 health:
   pingUrl: ""               # optional dead-man's switch, e.g. healthchecks.io

@@ -22,7 +22,7 @@ from tabelshchik.application.manage_absences import (
     add_absence,
     remove_absence,
 )
-from tabelshchik.application.voice import format_date
+from tabelshchik.application.voice import format_date, render_days
 from tabelshchik.domain.entities import Employee
 
 router = Router(name="employee")
@@ -116,15 +116,19 @@ async def office_week(query: CallbackQuery, services: BotContext) -> None:
     today = services.clock.today()
     snapshots = services.schedule.days_between(office_id, today, today + timedelta(days=7))
     names = {e.id: e.full_name for e in services.offices.employees(office_id)}
-    common = services.voice.catalog.common
 
-    lines = [
-        f"<b>{common.weekdays_short[snapshot.day.weekday()]} {snapshot.day.strftime('%d.%m')}</b>: "
-        + ", ".join(html.escape(names.get(eid, eid)) for eid in snapshot.roster)
-        for snapshot in snapshots
-        if snapshot.roster
-    ]
-    await query.message.answer("\n".join(lines) or "На ближайшую неделю никого не запланировано.")
+    chunks = render_days(
+        [
+            (
+                snapshot.day,
+                sorted((names.get(eid, eid) for eid in snapshot.roster), key=str.casefold),
+            )
+            for snapshot in snapshots
+        ],
+        services.voice.catalog.common,
+    )
+    for chunk in chunks or ["На ближайшую неделю никого не запланировано."]:
+        await query.message.answer(chunk)
 
 
 @router.callback_query(F.data == "me:absadd")

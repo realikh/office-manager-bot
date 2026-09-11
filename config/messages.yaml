@@ -5,14 +5,24 @@
 # facts — the tagged roster, the dates and the workbook read the same in every mood.
 #
 # House rules for writing these lines, which the code also enforces:
-#   * Toxicity is aimed at the situation — Mondays, the commute, the open-plan office,
-#     Tempo, the concept of work. Never at a person.
+#   * Toxicity is aimed at the situation — the commute, the open-plan office, Tempo,
+#     bureaucracy, the concept of work. Never at a person.
 #   * Nothing about anyone's appearance, competence, personal life, health, ethnicity,
 #     gender, religion, age or nationality.
 #   * `sad` and `depressive` are deadpan about the working week, not about being alive.
 #     A bot that reads as genuinely distressed in a work chat is neither funny nor kind
 #     to whoever feels obliged to respond to it.
-#   * {date} and {office} are substituted after escaping. Write them literally.
+#
+# Substitution tokens, all filled in by us after escaping. Write them literally:
+#   {when}    "Завтра" or "В понедельник"   — always sentence-initial, it is capitalised
+#   {date}    "14 сентября 2026 года"       — the bare date, no weekday
+#   {office}  «Pine Office Park»            — quotes are added by the code
+#   {tail}    the flavour clause            — from `tails` below, or from the model
+#
+# {when} and {date} are separate on purpose. They used to be one string, which meant a
+# template reading "…но {date} в офис надо" rendered as "…но В понедельник, 14 сентября
+# в офис надо", and an AI line that opened with its own weekday produced "В понедельник
+# В понедельник". Keeping the weekday in its own sentence-initial token removes both.
 
 common:
   weekdays: [понедельник, вторник, среда, четверг, пятница, суббота, воскресенье]
@@ -36,50 +46,148 @@ common:
   officeHeader: "🏢 <b>{office}</b>"
 
 attendance:
+  # The opening line. Everything factual is ours; only {tail} varies with the model.
   intro:
     toxic:
-      - "Так. {date}, офис {office}. Явка обязательна. Вызываются:"
-      - "{date}, {office}. Список тех, кому не повезло:"
-      - "Никто не просил, но {date} в офис {office} всё-таки надо. Идут:"
-      - "{date}. {office}. Диван подождёт. В офис выдвигаются:"
-      - "Напоминаю, что {date} офис {office} существует и ждёт. Конкретно этих:"
+      - "{when}, {date}. Офис {office}. {tail}"
+      - "Внимание! {when}, {date}, офис {office}. {tail}"
+      - "{when}, {date} — офис {office} никуда не делся. {tail}"
+      - "Так. {when}, {date}, офис {office}. {tail}"
+      - "{when}, {date}. Явка в офис {office} обязательна. {tail}"
     fun:
-      - "{date}, {office} — собираем состав! Выходят:"
-      - "Так-так-так. {date} в офисе {office} намечается движение. Участники:"
-      - "{date}. {office}. Кто идёт? А вот кто:"
-      - "Барабанная дробь. {date}, {office}, на сцене:"
+      - "{when}, {date} — собираемся в офисе {office}! {tail}"
+      - "Так-так-так. {when}, {date}, офис {office}. {tail}"
+      - "Барабанная дробь! {when}, {date}, офис {office}. {tail}"
+      - "{when}, {date}. Офис {office}, состав дня. {tail}"
     happy:
-      - "Отличные новости: {date} в офисе {office} собирается прекрасная компания:"
-      - "{date} в {office} — хороший повод увидеться вживую. Идут:"
-      - "Ждём {date} в офисе {office} этих замечательных людей:"
-      - "{date}, {office}. Будет здорово. Выходят:"
+      - "{when}, {date} — отличный повод увидеться в офисе {office}. {tail}"
+      - "Хорошие новости! {when}, {date}, офис {office}. {tail}"
+      - "{when}, {date}. Офис {office} собирает прекрасную компанию. {tail}"
+      - "{when}, {date}, в офисе {office} будет хорошая компания. {tail}"
     sad:
-      - "{date}. {office}. Опять. Идут:"
-      - "Ну что ж, {date} в офисе {office}. Как обычно. Выходят:"
-      - "{date}, {office}. Ничего не поделаешь. Список:"
-      - "Снова {date}, снова {office}. В этот раз:"
+      - "{when}, {date}. Офис {office}. {tail}"
+      - "Ну что ж. {when}, {date}, офис {office}. {tail}"
+      - "{when}, {date} — снова офис {office}. {tail}"
     depressive:
-      - "{date}, {office}. Впрочем, какая разница. Идут эти:"
-      - "Ещё один день. {date}, {office}. Кто-то должен. В этот раз:"
-      - "{date}. {office}. Всё повторяется. Приходят:"
-      - "Календарь снова показал {date}. Офис {office} никуда не делся. Значит:"
+      - "{when}, {date}. Офис {office}, как обычно. {tail}"
+      - "{when}, {date}. Офис {office} всё ещё существует. {tail}"
+      - "Календарь неумолим. {when}, {date}, офис {office}. {tail}"
+
+  # Flavour for {tail} when the model is switched off, times out, or writes something the
+  # guards reject. Plain text, no tokens — these are substituted *into* a template.
+  tails:
+    toxic:
+      - "Список ниже, возражения не принимаются"
+      - "Кофемашина уже предчувствует недоброе"
+      - "Дорога сама себя не перетерпит"
+      - "Опенспейс соскучился"
+      - "Отменить нельзя, я проверял"
+    fun:
+      - "Состав дня — ниже"
+      - "Кофемашина уже разогревается"
+      - "Обещаю, скучно не будет"
+      - "Явка по списку, аплодисменты по желанию"
+    happy:
+      - "Будет приятно всех увидеть"
+      - "День обещает быть хорошим"
+      - "Хорошего всем настроения"
+    sad:
+      - "Как обычно"
+      - "Ничего не поделаешь"
+      - "Список ниже"
+    depressive:
+      - "Всё повторяется"
+      - "Кто-то должен"
+      - "Разницы, впрочем, немного"
+
+  # One goes in front of each name. The model may replace them; these are the floor, and
+  # the reason every person on the roster gets a line even when the model returns nothing.
+  epithets:
+    toxic:
+      male:
+        - "Несгибаемый защитник"
+        - "Повелитель переговорок"
+        - "Хранитель опенспейса"
+        - "Стальной оптимист"
+        - "Мастер дедлайнов"
+      female:
+        - "Несгибаемая защитница"
+        - "Повелительница переговорок"
+        - "Хранительница опенспейса"
+        - "Стальная оптимистка"
+        - "Мастерица дедлайнов"
+    fun:
+      male:
+        - "Герой света"
+        - "Чемпион кофебрейка"
+        - "Главный по настроению"
+        - "Человек-праздник"
+        - "Повелитель стикеров"
+      female:
+        - "Героиня света"
+        - "Чемпионка кофебрейка"
+        - "Главная по настроению"
+        - "Душа компании"
+        - "Повелительница стикеров"
+    happy:
+      male:
+        - "Хранитель хорошего настроения"
+        - "Добрый гений опенспейса"
+        - "Лучший сосед по столу"
+        - "Мастер добрых слов"
+      female:
+        - "Хранительница хорошего настроения"
+        - "Добрая фея опенспейса"
+        - "Лучшая соседка по столу"
+        - "Мастерица добрых слов"
+    sad:
+      male:
+        - "Стойкий оловянный сотрудник"
+        - "Тихий герой"
+        - "Молчаливый свидетель"
+        - "Терпеливый ветеран"
+      female:
+        - "Стойкая оловянная сотрудница"
+        - "Тихая героиня"
+        - "Молчаливая свидетельница"
+        - "Терпеливая хранительница"
+    depressive:
+      male:
+        - "Вечный участник"
+        - "Свидетель бесконечности"
+        - "Постоянный посетитель"
+        - "Носитель пропуска"
+      female:
+        - "Вечная участница"
+        - "Свидетельница бесконечности"
+        - "Постоянная посетительница"
+        - "Носительница пропуска"
+
+  # Decoration in front of each roster line. Ours, never the model's — an emoji that comes
+  # back from a generation can be anything at all, including nothing.
+  emojis:
+    toxic: ["🛡", "⚡", "🔥", "☕", "🧱", "🗿"]
+    fun: ["🎉", "✨", "🎲", "🚀", "🍩", "🎯"]
+    happy: ["🌞", "✨", "🌟", "🤝", "🍀"]
+    sad: ["🌧", "🫠", "📎", "🕯"]
+    depressive: ["🌫", "🕳", "📉", "⏳"]
 
   empty:
     toxic:
-      - "{date} в офис никто не идёт. Поздравляю, вы все выиграли."
-      - "{date} офис пустует. Кто-то неплохо устроился."
+      - "{when}, {date}, в офис никто не идёт. Поздравляю, вы все выиграли."
+      - "{when}, {date}, офис пустует. Кто-то неплохо устроился."
     fun:
-      - "{date} офис отдыхает — в расписании пусто!"
-      - "{date} никого не ждём. Считайте, повезло."
+      - "{when}, {date}, офис отдыхает — в расписании пусто!"
+      - "{when}, {date}, никого не ждём. Считайте, повезло."
     happy:
-      - "{date} офис свободен — отличный день поработать из дома!"
-      - "{date} никого не ждём. Хорошего дня!"
+      - "{when}, {date}, офис свободен — отличный день поработать из дома!"
+      - "{when}, {date}, никого не ждём. Хорошего дня!"
     sad:
-      - "{date} в офисе никого. Тихо."
-      - "{date} никто не идёт. Ну и ладно."
+      - "{when}, {date}, в офисе никого. Тихо."
+      - "{when}, {date}, никто не идёт. Ну и ладно."
     depressive:
-      - "{date} офис будет пуст. Как и всегда, в общем-то."
-      - "{date} никого. Разницы, впрочем, немного."
+      - "{when}, {date}, офис будет пуст. Как и всегда, в общем-то."
+      - "{when}, {date}, никого. Разницы, впрочем, немного."
 
   correction: "✏️ Уточнение к расписанию на {date}, офис {office}."
   headerSeparator: ""
@@ -136,26 +244,31 @@ tempo:
       - "Период закрывается сегодня. Как и всё остальное:"
 
 ai:
+  # The persona sets the *tone*. It must not list topics: an earlier version told the
+  # toxic mood to joke "только про понедельники, дорогу…", and the model duly brought up
+  # Monday in every single answer, on every day of the week. Describe the character and
+  # let the question decide the subject.
   persona:
     toxic: >-
-      Ты — Табельщик, бот учёта посещаемости офиса. Ты ворчливый, язвительный и
-      не скрываешь, что считаешь офисную жизнь абсурдом. Шутишь едко — но только
-      про понедельники, дорогу до офиса, опенспейс, совещания и работу как явление.
-      Никогда не переходишь на личности и не обсуждаешь ничью внешность, компетентность,
-      здоровье или личную жизнь.
+      Ты — Табельщик, бот учёта посещаемости офиса. Характер у тебя ворчливый и
+      язвительный, но ты прежде всего отвечаешь по существу: сначала ответ, и только
+      потом, если уместно, одна колкость. Иронизируешь над обстоятельствами — работой
+      как явлением, совещаниями, бюрократией, дорогой, — но никогда над людьми и
+      никогда над чьей-то внешностью, компетентностью, здоровьем или личной жизнью.
     fun: >-
       Ты — Табельщик, бот учёта посещаемости офиса. Ты лёгкий, ироничный и
-      дружелюбный, любишь неожиданные сравнения и хорошую шутку.
+      дружелюбный, любишь неожиданные сравнения. Отвечаешь по делу, шутка — бонусом,
+      а не вместо ответа.
     happy: >-
-      Ты — Табельщик, бот учёта посещаемости офиса. Сегодня ты в прекрасном
-      настроении: доброжелательный, тёплый и искренне рад людям.
+      Ты — Табельщик, бот учёта посещаемости офиса. Сегодня ты в хорошем настроении:
+      доброжелательный, тёплый, отвечаешь охотно и по существу.
     sad: >-
-      Ты — Табельщик, бот учёта посещаемости офиса. Сегодня ты меланхоличен и
-      немногословен. Отвечаешь спокойно и чуть устало, но по делу и без драмы.
+      Ты — Табельщик, бот учёта посещаемости офиса. Сегодня ты немногословен:
+      отвечаешь спокойно, сухо и коротко, но точно и без нытья.
     depressive: >-
-      Ты — Табельщик, бот учёта посещаемости офиса. Сегодня ты философски
-      настроен насчёт бесконечности рабочих недель. Сухо, иронично, без надрыва
-      и без жалоб на жизнь — ты просто давно всё это видел.
+      Ты — Табельщик, бот учёта посещаемости офиса. Сегодня ты невозмутим и сух —
+      ты всё это уже видел. Отвечаешь по делу, с лёгкой усталой иронией, без
+      драматизма и без жалоб на жизнь.
   rateLimited:
     toxic:
       - "Лимит на сегодня исчерпан. Даже у моего терпения есть предел. Завтра."

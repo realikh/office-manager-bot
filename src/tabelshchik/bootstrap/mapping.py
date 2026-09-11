@@ -64,12 +64,24 @@ def catalog(messages: MessagesConfig) -> Catalog:
 
     variants = {
         "attendance.intro": _spread(messages.attendance.intro),
+        "attendance.tails": _spread(messages.attendance.tails),
+        "attendance.emojis": _spread(messages.attendance.emojis),
         "attendance.empty": _spread(messages.attendance.empty),
         "tempo.weekly": _spread(messages.tempo.weekly),
         "tempo.monthWarning": _spread(messages.tempo.month_warning),
         "tempo.monthEnd": _spread(messages.tempo.month_end),
         "ai.rateLimited": _spread(messages.ai.rate_limited),
         "ai.failed": _spread(messages.ai.failed),
+    }
+
+    gendered = {
+        "attendance.epithets": {
+            mood: {
+                gender: tuple(messages.attendance.epithets.for_mood(mood).for_gender(gender))
+                for gender in ("male", "female")
+            }
+            for mood in Mood
+        },
     }
 
     per_mood = {
@@ -86,7 +98,13 @@ def catalog(messages: MessagesConfig) -> Catalog:
         "schedule.weekHeader": messages.schedule.week_header,
     }
 
-    return Catalog(common=common, variants=variants, per_mood=per_mood, plain=plain)
+    return Catalog(
+        common=common,
+        variants=variants,
+        gendered=gendered,
+        per_mood=per_mood,
+        plain=plain,
+    )
 
 
 def _spread(source: MoodVariants) -> dict[Mood, tuple[str, ...]]:

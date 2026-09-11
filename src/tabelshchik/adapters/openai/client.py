@@ -13,6 +13,8 @@ from dataclasses import dataclass
 
 import httpx
 
+from tabelshchik.application.ports import Completion
+
 logger = logging.getLogger(__name__)
 
 ENDPOINT = "https://api.openai.com/v1/chat/completions"
@@ -27,12 +29,18 @@ class OpenAiChatModel:
     endpoint: str = ENDPOINT
 
     async def complete(
-        self, system: str, user: str, *, max_tokens: int, temperature: float
-    ) -> str | None:
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        json_object: bool = False,
+    ) -> Completion | None:
         if not self.api_key:
             return None
 
-        payload = {
+        payload: dict[str, object] = {
             "model": self.model,
             "max_completion_tokens": max_tokens,
             "temperature": temperature,
@@ -41,6 +49,10 @@ class OpenAiChatModel:
                 {"role": "user", "content": user},
             ],
         }
+        if json_object:
+            # Constrained decoding, so a reply that has to be parsed cannot come back as
+            # prose with a fenced block in the middle of it.
+            payload["response_format"] = {"type": "json_object"}
 
         for attempt in range(self.max_retries + 1):
             try:
@@ -66,7 +78,7 @@ class OpenAiChatModel:
                 logger.error("openai rejected the request: %s", response.text[:500])
                 return None
 
-            return _first_message(response.json())
+            return _completion(response.json())
 
         return None
 
@@ -75,7 +87,7 @@ class OpenAiChatModel:
             await asyncio.sleep(2**attempt)
 
 
-def _first_message(body: dict[str, object]) -> str | None:
+def _completion(body: dict[str, object]) -> Completion | None:
     choices = body.get("choices")
     if not isinstance(choices, list) or not choices:
         return None
@@ -86,4 +98,17 @@ def _first_message(body: dict[str, object]) -> str | None:
     if not isinstance(message, dict):
         return None
     content = message.get("content")
-    return content.strip() if isinstance(content, str) and content.strip() else None
+    if not isinstance(content, str) or not content.strip():
+        return None
+
+    usage = body.get("usage")
+    usage = usage if isinstance(usage, dict) else {}
+    return Completion(
+        text=content.strip(),
+        prompt_tokens=_count(usage.get("prompt_tokens")),
+        completion_tokens=_count(usage.get("completion_tokens")),
+    )
+
+
+def _count(value: object) -> int:
+    return value if isinstance(value, int) and value >= 0 else 0

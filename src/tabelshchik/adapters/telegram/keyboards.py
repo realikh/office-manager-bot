@@ -50,6 +50,40 @@ def office_menu(office_id: str) -> InlineKeyboardMarkup:
     )
 
 
+def employee_list(office_id: str, entries: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
+    """One button per person, plus a way to add one.
+
+    Callback data carries only the employee id — the office is derived from it. Telegram
+    caps callback data at 64 bytes, and an office id plus an employee id can exceed that.
+    """
+    rows = [(button(label, f"adm:empv:{employee_id}"),) for employee_id, label in entries]
+    return keyboard(
+        *rows,
+        (button("➕ Добавить", f"adm:empadd:{office_id}"),),
+        (button("‹ Назад", f"adm:office:{office_id}"),),
+    )
+
+
+def employee_card(office_id: str, employee_id: str, *, departed: bool) -> InlineKeyboardMarkup:
+    tenure = (
+        button("♻️ Восстановить", f"adm:emprest:{employee_id}")
+        if departed
+        else button("🚪 Уволить", f"adm:empfire:{employee_id}")
+    )
+    return keyboard(
+        (button("✏️ Переименовать", f"adm:empname:{employee_id}"),),
+        (button("🔗 Telegram-ник", f"adm:empuser:{employee_id}"),),
+        (tenure,),
+        (button("‹ Назад", f"adm:emp:{office_id}"),),
+    )
+
+
+def gender_picker() -> InlineKeyboardMarkup:
+    return keyboard(
+        (button("♂️ Мужской", "adm:empg:male"), button("♀️ Женский", "adm:empg:female")),
+    )
+
+
 def weekday_picker(office_id: str, action: str, values: dict[int, str]) -> InlineKeyboardMarkup:
     rows = [
         (

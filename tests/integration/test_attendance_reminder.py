@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import date, datetime
 from pathlib import Path
 
@@ -331,17 +332,40 @@ async def test_a_dry_run_renders_without_sending_or_freezing(office) -> None:
 # --------------------------------------------------------------------------- voice
 
 
+def decoration(tail: str, epithets: list[str]) -> str:
+    return json.dumps({"tail": tail, "epithets": epithets}, ensure_ascii=False)
+
+
 async def test_the_ai_flavoured_intro_is_used_when_it_is_valid(office) -> None:
-    model = StubChatModel(reply="Итак, {date}, офис {office}. Явка:")
+    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"]))
     notifier = RecordingNotifier()
 
     await remind(office, at(MONDAY), notifier, model=model)
 
-    assert notifier.last_text.startswith("Итак, Завтра, 15 сентября")
+    assert "Кофе стынет." in notifier.last_text
+    assert "Первый" in notifier.last_text
+    assert "Второй" in notifier.last_text
+    assert model.json_requested == [True]
+
+
+async def test_the_date_is_never_said_twice(office) -> None:
+    """The reason the weekday and the date are separate tokens.
+
+    A model that opens with its own lead-in used to produce "В понедельник В понедельник,
+    14 сентября". It can no longer put a weekday anywhere: it is not given one, and a tail
+    containing one is thrown away.
+    """
+    model = StubChatModel(reply=decoration("в понедельник снова весело", ["Первый", "Второй"]))
+    notifier = RecordingNotifier()
+
+    await remind(office, at(FRIDAY), notifier, model=model)
+
+    assert notifier.last_text.count("понедельник") == 1
+    assert "снова весело" not in notifier.last_text
 
 
 async def test_an_invented_colleague_falls_back_to_the_written_line(office) -> None:
-    model = StubChatModel(reply="{date}, {office}: особенно ждём Аню.")
+    model = StubChatModel(reply=decoration("особенно ждём Аню", ["Первый", "Второй"]))
     notifier = RecordingNotifier()
 
     await remind(office, at(MONDAY), notifier, model=model)
@@ -352,14 +376,29 @@ async def test_an_invented_colleague_falls_back_to_the_written_line(office) -> N
     assert notifier.last_text.count("\n") >= 2
 
 
+async def test_everyone_is_named_even_when_the_model_says_nothing(office) -> None:
+    """The guarantee. Decoration is optional; being reminded is not."""
+    notifier = RecordingNotifier()
+    await remind(office, at(MONDAY), notifier, model=StubChatModel(reply=None))
+
+    roster = SqlScheduleStore(office).day("ovest", TUESDAY).roster
+    names = {e.id: e.full_name for e in SqlOfficeStore(office).employees("ovest")}
+    assert roster
+    for employee_id in roster:
+        assert names[employee_id] in notifier.last_text
+    # And each line carries a title, not a bare name.
+    assert notifier.last_text.count("\n") >= len(roster) + 1
+
+
 async def test_the_model_never_learns_the_date_the_office_or_the_roster(office) -> None:
-    model = StubChatModel(reply="{date} {office}:")
+    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"]))
     await remind(office, at(MONDAY), notifier=RecordingNotifier(), model=model)
 
     everything = " ".join(part for prompt in model.prompts for part in prompt)
     assert "сентября" not in everything
     assert "O'Vest" not in everything
     assert "Аня" not in everything
+    assert "вторник" not in everything.lower()
 
 
 async def test_every_mood_produces_a_sendable_message(office) -> None:

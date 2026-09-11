@@ -564,6 +564,42 @@ def test_pruning_never_touches_people_offices_or_templates(sessions) -> None:
     assert context.template.desks_on(0) == 2
 
 
+def test_old_chat_messages_are_pruned_but_memory_is_not(sessions) -> None:
+    """The cache is other people's conversation, kept only long enough to rebuild a
+    reply chain. The facts the bot chose to keep are bounded by count, not by age, so
+    retention must not quietly empty them."""
+    from tabelshchik.adapters.clock import FixedClock
+    from tabelshchik.adapters.db.repositories import (
+        SqlChatMemoryStore,
+        SqlMaintenance,
+        SqlMessageCache,
+    )
+    from tabelshchik.application import memory
+    from tabelshchik.application.ports import CachedMessage
+    from tabelshchik.application.prune_history import RetentionPolicy, prune_history
+
+    seed(sessions)
+    cache = SqlMessageCache(sessions)
+    now = datetime(2026, 9, 11, 12, 0)
+    cache.remember(-100, CachedMessage(1, "Аня", "старое"), at=now - timedelta(days=30))
+    cache.remember(-100, CachedMessage(2, "Аня", "свежее"), at=now)
+    SqlChatMemoryStore(sessions).remember(
+        memory.OFFICE, "ovest", "Стендап в 10:30", keep=5, at=now - timedelta(days=365)
+    )
+
+    report = prune_history(
+        offices=SqlOfficeStore(sessions),
+        ledger=SqlLedgerStore(sessions),
+        maintenance=SqlMaintenance(sessions),
+        clock=FixedClock(now),
+        policy=RetentionPolicy(chat_messages_days=7),
+    )
+
+    assert report.chat_messages_removed == 1
+    assert [item.text for item in cache.chain(-100, 2, depth=5)] == ["свежее"]
+    assert SqlChatMemoryStore(sessions).facts(memory.OFFICE, "ovest", limit=5)
+
+
 def test_a_backup_produces_a_readable_copy(sessions, tmp_path) -> None:
     """Nightly off-box backups are only worth having if they actually open."""
     import sqlite3

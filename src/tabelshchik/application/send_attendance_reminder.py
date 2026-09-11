@@ -26,6 +26,7 @@ from tabelshchik.application.voice import (
 )
 from tabelshchik.domain.calendar import next_working_day
 from tabelshchik.domain.entities import Employee
+from tabelshchik.domain.mood import Mood
 
 
 class ReminderSkip(StrEnum):
@@ -92,26 +93,31 @@ async def send_attendance_reminder(
     mood = voice.mood_for(office_id=office_id, day=today)
     employees = {employee.id: employee for employee in offices.employees(office_id)}
     common = voice.catalog.common
-    date_text = f"{lead_in(today, target, common)}, {format_date(target, common)}"
+    # Two values, not one concatenated string. `when` is sentence-initial and capitalised;
+    # `date` is the bare date. Folding them together is what let an AI-written line put its
+    # own weekday in front of ours and say "В понедельник В понедельник".
+    when = lead_in(today, target, common)
+    date_text = format_date(target, common)
 
     if roster:
-        intro = await voice.intro(
-            "attendance.intro",
-            mood,
+        text = await _render_roster(
+            roster=roster,
+            employees=employees,
+            voice=voice,
+            mood=mood,
             office_id=office_id,
             office_name=context.office.name,
-            day=today,
+            today=today,
+            when=when,
             date_text=date_text,
-            forbidden=[employee.full_name for employee in employees.values()],
         )
-        body = "\n".join(_mention_line(employees, employee_id) for employee_id in roster)
-        text = f"{intro}\n\n{body}"
     else:
         text = voice.static(
             "attendance.empty",
             mood,
             office_id=office_id,
             day=today,
+            when=when,
             date_text=date_text,
             office_name=context.office.name,
         )
@@ -151,6 +157,67 @@ async def send_attendance_reminder(
         silent=silent,
         correction=correction,
     )
+
+
+async def _render_roster(
+    *,
+    roster: tuple[str, ...],
+    employees: dict[str, Employee],
+    voice: Voice,
+    mood: Mood,
+    office_id: str,
+    office_name: str,
+    today: date,
+    when: str,
+    date_text: str,
+) -> str:
+    """The opening line, then one row per person.
+
+    The loop is over the roster, never over anything the model returned. A decoration that
+    is missing, short, or nonsense costs a hand-written title and nothing else — everyone
+    scheduled is still named and still tagged.
+    """
+    # Reading order, not id order: `DaySnapshot.roster` sorts by employee id, which is an
+    # implementation detail nobody in the chat can see.
+    ordered = sorted(roster, key=lambda employee_id: _sort_key(employees, employee_id))
+    genders = [_gender_of(employees, employee_id) for employee_id in ordered]
+
+    decoration = await voice.decorate(
+        mood,
+        office_id=office_id,
+        office_name=office_name,
+        day=today,
+        genders=genders,
+        forbidden=[employee.full_name for employee in employees.values()],
+    )
+
+    intro = voice.static(
+        "attendance.intro",
+        mood,
+        office_id=office_id,
+        day=today,
+        when=when,
+        date_text=date_text,
+        office_name=office_name,
+        tail=decoration.tail,
+    )
+
+    emojis = voice.emojis(mood, office_id=office_id, day=today, count=len(ordered))
+    rows = [
+        f"{emojis[index]} {decoration.epithets[index]} {_mention_line(employees, employee_id)}"
+        for index, employee_id in enumerate(ordered)
+    ]
+    return "{intro}\n\n{body}".format(intro=intro, body="\n".join(rows))
+
+
+def _sort_key(employees: dict[str, Employee], employee_id: str) -> str:
+    employee = employees.get(employee_id)
+    return (employee.full_name if employee else employee_id).casefold()
+
+
+def _gender_of(employees: dict[str, Employee], employee_id: str) -> str:
+    employee = employees.get(employee_id)
+    return str(employee.gender) if employee else "male"
 
 
 def _chat_is_shared(offices: OfficeStore, chat_id: int | None) -> bool:

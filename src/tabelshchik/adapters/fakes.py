@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from tabelshchik.application.ports import SentMessage
+from tabelshchik.application.ports import Completion, SentMessage
 
 
 @dataclass
@@ -58,13 +58,35 @@ class RecordingNotifier:
 
 @dataclass
 class StubChatModel:
-    """A model that always says the same thing, or nothing at all."""
+    """A model that always says the same thing, or nothing at all.
+
+    ``reply`` is returned verbatim, including when JSON was asked for — so a test can
+    hand back prose where the caller wanted an object and check that the fallback holds.
+    """
 
     reply: str | None = None
     prompts: list[tuple[str, str]] = field(default_factory=list)
+    #: Whether each call asked for a JSON object, in call order.
+    json_requested: list[bool] = field(default_factory=list)
+    #: What the API would have reported spending. Zero unless a test cares.
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
     async def complete(
-        self, system: str, user: str, *, max_tokens: int, temperature: float
-    ) -> str | None:
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        json_object: bool = False,
+    ) -> Completion | None:
         self.prompts.append((system, user))
-        return self.reply
+        self.json_requested.append(json_object)
+        if self.reply is None:
+            return None
+        return Completion(
+            text=self.reply,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+        )

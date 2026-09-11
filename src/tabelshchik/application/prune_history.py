@@ -32,6 +32,9 @@ class RetentionPolicy:
     job_runs_days: int = 90
     audit_days: int = 180
     ai_usage_days: int = 60
+    #: Raw chat messages exist only to rebuild a reply chain, which nobody follows back
+    #: more than a few days.
+    chat_messages_days: int = 7
     vacuum: bool = True
 
 
@@ -44,6 +47,7 @@ class PruneReport:
     audit_removed: int = 0
     ai_usage_removed: int = 0
     absences_removed: int = 0
+    chat_messages_removed: int = 0
     bytes_before: int = 0
     bytes_after: int = 0
 
@@ -55,6 +59,7 @@ class PruneReport:
             or self.audit_removed
             or self.ai_usage_removed
             or self.absences_removed
+            or self.chat_messages_removed
         )
 
 
@@ -103,6 +108,9 @@ def prune_history(
             today - timedelta(days=policy.ai_usage_days)
         ),
         absences_removed=maintenance.delete_absences_before(watermark),
+        chat_messages_removed=maintenance.delete_chat_messages_before(
+            _cutoff(now, policy.chat_messages_days)
+        ),
         bytes_before=bytes_before,
     )
 

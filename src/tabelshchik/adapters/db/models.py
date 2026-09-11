@@ -312,6 +312,46 @@ class BotMood(Base):
     chosen_by: Mapped[str] = mapped_column(String(8), default="roll")
 
 
+class ChatMessage(Base):
+    """A message the bot saw, kept only so a reply chain can be walked back up.
+
+    Telegram fills in ``reply_to_message`` exactly one level deep, so following a thread
+    any further means having kept the messages ourselves. These rows are pruned
+    aggressively — nobody follows a thread back a fortnight, and storing other people's
+    conversation for longer than it is useful is its own problem.
+    """
+
+    __tablename__ = "chat_message"
+
+    chat_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    message_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    author: Mapped[str] = mapped_column(String(128), default="")
+    text: Mapped[str] = mapped_column(Text, default="")
+    reply_to_message_id: Mapped[int | None] = mapped_column(Integer, default=None)
+    at: Mapped[datetime] = mapped_column(DateTime)
+
+    __table_args__ = (Index("ix_chat_message_at", "at"),)
+
+
+class ChatMemory(Base):
+    """A short fact the bot asked to keep.
+
+    ``scope`` is ``office`` (shared with everyone in that chat) or ``employee`` (shown
+    only to the person it is about). Both are ring buffers bounded by config, so the
+    prompt built from them has a fixed maximum size.
+    """
+
+    __tablename__ = "chat_memory"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    scope: Mapped[str] = mapped_column(String(16))
+    subject: Mapped[str] = mapped_column(String(64))
+    fact: Mapped[str] = mapped_column(Text)
+    at: Mapped[datetime] = mapped_column(DateTime)
+
+    __table_args__ = (Index("ix_chat_memory_scope_subject", "scope", "subject", "id"),)
+
+
 class AuditLog(Base):
     __tablename__ = "audit_log"
 

@@ -2,6 +2,11 @@
 
 Deliberately last in the router chain: it answers anything that no command claimed, so
 registering it earlier would swallow the admin and employee flows.
+
+It also keeps a short cache of what it has seen. Telegram populates ``reply_to_message``
+exactly one level deep, so following a thread further back is only possible from messages
+we stored ourselves — including the bot's own replies, which are usually what a follow-up
+question is attached to.
 """
 
 from __future__ import annotations
@@ -13,8 +18,9 @@ from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
-from tabelshchik.application.chat import answer
+from tabelshchik.application.chat import Thread, answer
 from tabelshchik.application.context import BotContext
+from tabelshchik.application.ports import CachedMessage
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +31,20 @@ router = Router(name="chat")
 async def talk(message: Message, services: BotContext) -> None:
     if message.from_user is None or message.from_user.is_bot:
         return
+
+    # Cached before the trigger check, and whatever happens next: a message nobody
+    # addressed to the bot today is exactly the middle link a reply chain needs tomorrow.
+    _remember(services, message, author=_display_name(message))
+
+    # Telegram hands us the immediate parent in full even when privacy mode kept us from
+    # seeing it live. Storing it is what guarantees at least one level of context in a
+    # chat where the bot cannot read everything.
+    if message.reply_to_message is not None:
+        _remember(
+            services,
+            message.reply_to_message,
+            author=_display_name(message.reply_to_message),
+        )
 
     trigger = _trigger_for(message, services)
     if trigger is None or trigger not in services.chat_policy.triggers:
@@ -44,16 +64,67 @@ async def talk(message: Message, services: BotContext) -> None:
         voice=services.voice,
         clock=services.clock,
         policy=services.chat_policy,
+        thread=Thread(
+            chat_id=message.chat.id,
+            # The parent, not this message: the question itself is passed separately, and
+            # quoting it back to the model would just pay for it twice.
+            reply_to_message_id=(
+                message.reply_to_message.message_id
+                if message.reply_to_message is not None
+                else None
+            ),
+        ),
+        messages=services.messages_cache,
+        memories=services.memories,
     )
     if not reply.text:
         return
 
     try:
-        await message.reply(reply.text)
+        sent = await message.reply(reply.text)
     except TelegramBadRequest:
         # The message being replied to can be deleted between us reading it and
         # answering. The answer is still worth sending; it just loses the threading.
-        await message.answer(reply.text)
+        sent = await message.answer(reply.text)
+
+    # Without this, a follow-up replying to the bot's own answer would find a chain that
+    # stops dead at the bot's message — the half of the conversation that matters most.
+    _remember(services, sent, author="Табельщик", replying_to=message.message_id)
+
+
+def _remember(
+    services: BotContext, message: Message, *, author: str, replying_to: int | None = None
+) -> None:
+    text = message.text or message.caption or ""
+    if not text.strip():
+        return
+    services.messages_cache.remember(
+        message.chat.id,
+        CachedMessage(
+            message_id=message.message_id,
+            author=author,
+            text=text,
+            reply_to_message_id=(
+                replying_to
+                if replying_to is not None
+                else (
+                    message.reply_to_message.message_id
+                    if message.reply_to_message is not None
+                    else None
+                )
+            ),
+        ),
+        at=services.clock.now(),
+    )
+
+
+def _display_name(message: Message) -> str:
+    user = message.from_user
+    if user is None:
+        return "Кто-то"
+    if user.is_bot:
+        return "Табельщик"
+    return user.full_name or (f"@{user.username}" if user.username else "Кто-то")
 
 
 def _trigger_for(message: Message, services: BotContext) -> str | None:

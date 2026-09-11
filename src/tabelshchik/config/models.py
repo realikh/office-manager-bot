@@ -149,6 +149,10 @@ class RetentionSection(Base):
     job_runs_days: int = Field(default=90, ge=1)
     audit_days: int = Field(default=180, ge=1)
     ai_usage_days: int = Field(default=60, ge=1)
+    #: Raw chat messages exist only to reconstruct a reply chain, which nobody follows
+    #: back more than a few days. Keeping them longer stores other people's conversation
+    #: for no benefit.
+    chat_messages_days: int = Field(default=7, ge=1, le=90)
 
 
 class MoodWeight(Base):
@@ -157,10 +161,10 @@ class MoodWeight(Base):
 
 _DEFAULT_MOODS: dict[Mood, MoodWeight] = {
     "toxic": MoodWeight(weight=55),
-    "fun": MoodWeight(weight=15),
-    "happy": MoodWeight(weight=10),
-    "sad": MoodWeight(weight=10),
-    "depressive": MoodWeight(weight=10),
+    "fun": MoodWeight(weight=25),
+    "happy": MoodWeight(weight=12),
+    "sad": MoodWeight(weight=5),
+    "depressive": MoodWeight(weight=3),
 }
 
 
@@ -180,16 +184,41 @@ class PersonalitySection(Base):
         return self
 
 
+class ChatContextSection(Base):
+    """How much conversation the chat carries, and what it is allowed to remember.
+
+    Every limit is a *character* budget rather than a token one, because characters are
+    what the code can actually enforce before the request is built. The point of them all
+    is the same: the prompt must have a bounded worst case, so a long thread or a chatty
+    week cannot quietly multiply the bill.
+    """
+
+    #: How far back a reply chain is followed. Telegram only ever hands us one level, so
+    #: the rest is reconstructed from the message cache.
+    reply_depth: int = Field(default=10, ge=0, le=25)
+    #: Ceiling on the whole quoted chain.
+    reply_chars: int = Field(default=1200, ge=0, le=8000)
+    #: Ceiling on any single quoted message within it.
+    message_chars: int = Field(default=200, ge=40, le=1000)
+    #: Whether the model may write things down at all.
+    remember: bool = True
+    #: Ring-buffer sizes. Oldest fact is evicted when a new one arrives.
+    general_facts: int = Field(default=20, ge=0, le=100)
+    personal_facts: int = Field(default=10, ge=0, le=50)
+    fact_chars: int = Field(default=120, ge=20, le=500)
+
+
 class AiSection(Base):
     enabled: bool = True
     model: str = "gpt-4.1-nano"
     max_tokens: int = Field(default=400, ge=1, le=4000)
-    temperature: float = Field(default=0.9, ge=0.0, le=2.0)
+    temperature: float = Field(default=1.0, ge=0.0, le=2.0)
     per_user_daily_limit: int = Field(default=10, ge=0)
     global_daily_limit: int = Field(default=200, ge=0)
     triggers: list[AiTrigger] = Field(default_factory=lambda: list(_DEFAULT_TRIGGERS))
     request_timeout_seconds: float = Field(default=20.0, gt=0)
     max_retries: int = Field(default=2, ge=0, le=5)
+    chat: ChatContextSection = ChatContextSection()
 
 
 class HealthSection(Base):

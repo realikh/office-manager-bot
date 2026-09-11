@@ -178,6 +178,7 @@ class RosterStore(Protocol):
     ) -> None: ...
 
     def remove_employee(self, employee_id: str, *, ended_on: date | None = None) -> bool: ...
+    def restore_employee(self, employee_id: str) -> bool: ...
     def rename_employee(self, employee_id: str, full_name: str) -> bool: ...
     def set_username(self, employee_id: str, username: str | None) -> bool: ...
     def set_vacant_desks(self, office_id: str, weekday: int, desks: int) -> None: ...
@@ -197,6 +198,7 @@ class MaintenanceStore(Protocol):
     def delete_job_runs_before(self, cutoff: datetime) -> int: ...
     def delete_audit_before(self, cutoff: datetime) -> int: ...
     def delete_ai_usage_before(self, cutoff: date) -> int: ...
+    def delete_chat_messages_before(self, cutoff: datetime) -> int: ...
     def delete_absences_before(self, cutoff: date) -> int: ...
     def database_bytes(self) -> int: ...
     def vacuum(self) -> None: ...
@@ -247,10 +249,34 @@ class Notifier(Protocol):
     ) -> SentMessage | None: ...
 
 
+@dataclass(frozen=True, slots=True)
+class Completion:
+    """One model reply, with what it cost.
+
+    The token counts come back from the API on every call and used to be thrown away, so
+    ``ai_usage.tokens`` was always zero and nothing in the system could answer "how much
+    is this costing". Carrying them here is what makes the admin status screen honest.
+    """
+
+    text: str
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
 class ChatModel(Protocol):
     async def complete(
-        self, system: str, user: str, *, max_tokens: int, temperature: float
-    ) -> str | None:
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        json_object: bool = False,
+    ) -> Completion | None:
         """Returns None rather than raising — every caller has a working fallback."""
         ...
 
@@ -261,6 +287,54 @@ class UsageStore(Protocol):
     def used_today(self, user_id: int, day: date) -> int: ...
     def total_today(self, day: date) -> int: ...
     def record(self, user_id: int, day: date, *, tokens: int = 0) -> None: ...
+    def tokens_today(self, day: date) -> int: ...
+
+
+@dataclass(frozen=True, slots=True)
+class CachedMessage:
+    """One message the bot saw, kept only so a reply chain can be walked back up."""
+
+    message_id: int
+    author: str
+    text: str
+    reply_to_message_id: int | None = None
+
+
+class MessageCache(Protocol):
+    """Recent chat messages, addressed by Telegram's own ids.
+
+    Telegram populates ``reply_to_message`` exactly one level deep, so following a thread
+    any further means having kept the messages ourselves.
+    """
+
+    def remember(self, chat_id: int, message: CachedMessage, *, at: datetime) -> None: ...
+
+    def chain(self, chat_id: int, message_id: int, *, depth: int) -> Sequence[CachedMessage]:
+        """The reply chain ending at ``message_id``, oldest first, root excluded if
+        missing. Stops early at the first link that was never cached."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class MemoryFact:
+    scope: str
+    subject: str
+    fact: str
+
+
+class ChatMemoryStore(Protocol):
+    """What the bot has chosen to remember, as short facts in two scopes.
+
+    ``office`` facts are shared; ``employee`` facts are shown only to the person they are
+    about. Both are ring buffers — remembering something new is what forgets something
+    old, so the prompt has a fixed maximum size.
+    """
+
+    def facts(self, scope: str, subject: str, *, limit: int) -> Sequence[MemoryFact]: ...
+
+    def remember(self, scope: str, subject: str, fact: str, *, keep: int, at: datetime) -> None: ...
+
+    def forget_all(self, scope: str, subject: str) -> int: ...
 
 
 class MoodStore(Protocol):

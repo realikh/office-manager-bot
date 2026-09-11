@@ -18,11 +18,14 @@ rather than a repair.
 - **Tempo reminders** weekly and at month end.
 - **A colour-coded XLSX** published whenever a schedule changes, with a statistics sheet
   that puts the fairness spread front and centre.
-- **Admin mode** inside Telegram: rosters, weekly template, regeneration, previews, job
-  status, backups.
+- **Admin mode** inside Telegram: hire and fire, rename, link Telegram handles, weekly
+  template, regeneration, previews, job status, backups. The database is authoritative
+  after first boot, so this is the only way to change a roster — the YAML seeds are a
+  starting point, not a live source.
 - **Employee self-service**: everyone manages their own vacations.
-- **Chat.** Mention the bot and it answers, grounded in the real schedule, rate-limited
-  per person per day.
+- **Chat.** Mention the bot and it answers, grounded in the real schedule and today's
+  actual date, following a reply chain back up to ten levels, rate-limited per person per
+  day.
 - **Moods.** Mostly toxic, occasionally fun, happy, sad or depressive — one per office
   per day.
 
@@ -157,6 +160,16 @@ Published automatically on startup, scoped by audience — nothing to configure 
 | `/vacation` | Manage your own time off |
 | `/help` | Also the only command published in groups |
 | `/admin` | Admins only |
+
+### Telegram privacy mode
+
+Optional, and off by default in Telegram. With privacy **on** (the default) the bot
+receives only messages that mention it or reply to it, so a reply chain reconstructs as
+far as the messages it was party to and then stops — a partial thread, never a wrong one.
+Setting privacy to **Disabled** in @BotFather lets it see every group message, which makes
+the full ten levels work; it also means it receives everything people say in that chat.
+Raw messages are cached for `retention.chatMessagesDays` (7 by default) and used for
+nothing else. Your call; no code changes either way.
 
 ## Development
 

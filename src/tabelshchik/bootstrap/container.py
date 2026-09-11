@@ -23,9 +23,11 @@ from tabelshchik.adapters.db.engine import (
 from tabelshchik.adapters.db.repositories import (
     SqlAbsenceStore,
     SqlAuditLog,
+    SqlChatMemoryStore,
     SqlJobLedger,
     SqlLedgerStore,
     SqlMaintenance,
+    SqlMessageCache,
     SqlMoodStore,
     SqlOfficeStore,
     SqlRosterStore,
@@ -43,11 +45,13 @@ from tabelshchik.application.policy import (
 from tabelshchik.application.ports import (
     AbsenceStore,
     AuditLog,
+    ChatMemoryStore,
     ChatModel,
     Clock,
     JobLedger,
     LedgerStore,
     MaintenanceStore,
+    MessageCache,
     MoodStore,
     Notifier,
     OfficeStore,
@@ -95,6 +99,8 @@ class Services:
     absences: AbsenceStore = field(init=False)
     roster: RosterStore = field(init=False)
     usage: UsageStore = field(init=False)
+    messages_cache: MessageCache = field(init=False)
+    memories: ChatMemoryStore = field(init=False)
     moods: MoodStore = field(init=False)
     jobs: JobLedger = field(init=False)
     audit: AuditLog = field(init=False)
@@ -107,6 +113,8 @@ class Services:
         self.absences = SqlAbsenceStore(self.sessions)
         self.roster = SqlRosterStore(self.sessions)
         self.usage = SqlUsageStore(self.sessions)
+        self.messages_cache = SqlMessageCache(self.sessions)
+        self.memories = SqlChatMemoryStore(self.sessions)
         self.moods = SqlMoodStore(self.sessions)
         self.jobs = SqlJobLedger(self.sessions)
         self.audit = SqlAuditLog(self.sessions)
@@ -134,6 +142,7 @@ class Services:
             job_runs_days=section.job_runs_days,
             audit_days=section.audit_days,
             ai_usage_days=section.ai_usage_days,
+            chat_messages_days=section.chat_messages_days,
         )
 
     @property
@@ -150,6 +159,13 @@ class Services:
             max_tokens=section.max_tokens,
             temperature=section.temperature,
             triggers=frozenset(section.triggers),
+            reply_depth=section.chat.reply_depth,
+            reply_chars=section.chat.reply_chars,
+            message_chars=section.chat.message_chars,
+            remember=section.chat.remember,
+            general_facts=section.chat.general_facts,
+            personal_facts=section.chat.personal_facts,
+            fact_chars=section.chat.fact_chars,
         )
 
     @property

@@ -47,14 +47,31 @@ class TempoPolicy:
 
 @dataclass(frozen=True, slots=True)
 class ChatPolicy:
+    """What the chat may spend, and how much it may carry.
+
+    Every context limit is a character budget rather than a token one, because characters
+    are what can be enforced before the request is built. They exist so the worst-case
+    prompt is known in advance instead of discovered on an invoice.
+    """
+
     enabled: bool = True
     per_user_daily_limit: int = 10
     global_daily_limit: int = 200
     max_tokens: int = 400
-    temperature: float = 0.9
+    temperature: float = 1.0
     triggers: frozenset[str] = frozenset({"mention", "reply", "private"})
     #: How much of the person's own schedule to put in front of the model.
     upcoming_days: int = 5
+    #: How far back a reply chain is followed. Telegram gives us one level; the rest is
+    #: reconstructed from the message cache.
+    reply_depth: int = 10
+    reply_chars: int = 1200
+    message_chars: int = 200
+    #: Whether the model may write facts down at all.
+    remember: bool = True
+    general_facts: int = 20
+    personal_facts: int = 10
+    fact_chars: int = 120
 
 
 @dataclass(frozen=True, slots=True)

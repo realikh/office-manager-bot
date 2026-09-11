@@ -16,7 +16,9 @@ from tabelshchik.adapters.db import models
 from tabelshchik.adapters.db.engine import session_scope
 from tabelshchik.adapters.holiday_calendar import public_holidays
 from tabelshchik.application.ports import (
+    CachedMessage,
     DaySnapshot,
+    MemoryFact,
     PlanningContext,
     ScheduleDiff,
 )
@@ -715,6 +717,12 @@ class SqlMaintenance(SqlRepository):
                 session.execute(delete(models.AiUsage).where(models.AiUsage.day < cutoff))
             )
 
+    def delete_chat_messages_before(self, cutoff: datetime) -> int:
+        with session_scope(self._sessions) as session:
+            return _rows_affected(
+                session.execute(delete(models.ChatMessage).where(models.ChatMessage.at < cutoff))
+            )
+
     def delete_absences_before(self, cutoff: date) -> int:
         with session_scope(self._sessions) as session:
             return _rows_affected(
@@ -780,6 +788,119 @@ class SqlUsageStore(SqlRepository):
                 session.add(row)
             row.count += 1
             row.tokens += tokens
+
+    def tokens_today(self, day: date) -> int:
+        with session_scope(self._sessions) as session:
+            counts = session.scalars(
+                select(models.AiUsage.tokens).where(models.AiUsage.day == day)
+            ).all()
+            return sum(counts)
+
+
+class SqlMessageCache(SqlRepository):
+    """Recent chat messages, so a reply chain can be followed further than one level.
+
+    Telegram hands us the parent of a message and nothing beyond it, so a thread three
+    replies deep is only reconstructable from what we kept. Note the bot only *receives*
+    what Telegram's privacy setting lets it see: with privacy on, that is messages
+    mentioning it or replying to it, and a chain through ordinary chatter will stop at
+    the first link nobody cached. That is a partial chain, not a wrong one.
+    """
+
+    def remember(self, chat_id: int, message: CachedMessage, *, at: datetime) -> None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.ChatMessage, (chat_id, message.message_id))
+            if row is not None:
+                return
+            session.add(
+                models.ChatMessage(
+                    chat_id=chat_id,
+                    message_id=message.message_id,
+                    author=message.author[:128],
+                    text=message.text,
+                    reply_to_message_id=message.reply_to_message_id,
+                    at=at,
+                )
+            )
+
+    def chain(self, chat_id: int, message_id: int, *, depth: int) -> Sequence[CachedMessage]:
+        collected: list[CachedMessage] = []
+        seen: set[int] = set()
+        current: int | None = message_id
+
+        with session_scope(self._sessions) as session:
+            while current is not None and len(collected) < depth:
+                # A malformed reply graph must not become an infinite loop; Telegram ids
+                # are monotonic in practice but nothing here depends on that being true.
+                if current in seen:
+                    break
+                seen.add(current)
+
+                row = session.get(models.ChatMessage, (chat_id, current))
+                if row is None:
+                    break
+                collected.append(
+                    CachedMessage(
+                        message_id=row.message_id,
+                        author=row.author,
+                        text=row.text,
+                        reply_to_message_id=row.reply_to_message_id,
+                    )
+                )
+                current = row.reply_to_message_id
+
+        collected.reverse()  # oldest first: the thread reads in the order it happened
+        return collected
+
+
+class SqlChatMemoryStore(SqlRepository):
+    """Short facts the bot asked to keep, as a ring buffer per scope.
+
+    Writing a new fact is what evicts the oldest one. That is the whole retention policy:
+    a bounded number of rows means a bounded prompt, and a bounded prompt means a bill
+    that cannot creep.
+    """
+
+    def facts(self, scope: str, subject: str, *, limit: int) -> Sequence[MemoryFact]:
+        if limit <= 0:
+            return []
+        with session_scope(self._sessions) as session:
+            rows = session.scalars(
+                select(models.ChatMemory)
+                .where(models.ChatMemory.scope == scope, models.ChatMemory.subject == subject)
+                .order_by(models.ChatMemory.id.desc())
+                .limit(limit)
+            ).all()
+            # Newest first out of the database, oldest first to the caller, so the most
+            # recent thing the bot was told reads last and nearest to the question.
+            return [
+                MemoryFact(scope=row.scope, subject=row.subject, fact=row.fact)
+                for row in reversed(rows)
+            ]
+
+    def remember(self, scope: str, subject: str, fact: str, *, keep: int, at: datetime) -> None:
+        with session_scope(self._sessions) as session:
+            session.add(models.ChatMemory(scope=scope, subject=subject, fact=fact, at=at))
+            session.flush()
+
+            surplus = session.scalars(
+                select(models.ChatMemory.id)
+                .where(models.ChatMemory.scope == scope, models.ChatMemory.subject == subject)
+                .order_by(models.ChatMemory.id.desc())
+                .offset(max(keep, 0))
+            ).all()
+            if surplus:
+                session.execute(delete(models.ChatMemory).where(models.ChatMemory.id.in_(surplus)))
+
+    def forget_all(self, scope: str, subject: str) -> int:
+        with session_scope(self._sessions) as session:
+            return _rows_affected(
+                session.execute(
+                    delete(models.ChatMemory).where(
+                        models.ChatMemory.scope == scope, models.ChatMemory.subject == subject
+                    )
+                )
+            )
 
 
 class SqlMoodStore(SqlRepository):
@@ -896,6 +1017,19 @@ class SqlRosterStore(SqlRepository):
                 session.delete(row)
             else:
                 row.ended_on = ended_on
+            return True
+
+    def restore_employee(self, employee_id: str) -> bool:
+        """Undo an end date.
+
+        The reason `remove_employee` prefers an end date to a delete: a misclick costs one
+        button press to reverse, and nothing about their history was ever thrown away.
+        """
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Employee, employee_id)
+            if row is None:
+                return False
+            row.ended_on = None
             return True
 
     def rename_employee(self, employee_id: str, full_name: str) -> bool:

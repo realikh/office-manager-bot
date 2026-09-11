@@ -36,6 +36,42 @@ class MoodVariants(Base):
                 if missing:
                     raise ValueError(f"{mood.value} line is missing {missing}: {line!r}")
 
+    def forbid_braces(self) -> None:
+        """For lines that are substituted *into* a template rather than rendered.
+
+        A stray brace in one of these would survive into the final text, where the
+        rendering guards treat it as a failed substitution and throw the whole line away.
+        """
+        for mood in Mood:
+            for line in self.for_mood(mood):
+                if "{" in line or "}" in line:
+                    raise ValueError(f"{mood.value} line must not contain braces: {line!r}")
+
+
+class GenderedVariants(Base):
+    """Lines that have to agree in gender with the person they describe."""
+
+    male: list[str] = Field(min_length=1)
+    female: list[str] = Field(min_length=1)
+
+    def for_gender(self, gender: str) -> list[str]:
+        return list(self.female if gender == "female" else self.male)
+
+
+class MoodGendered(Base):
+    """A gendered set per mood. All five moods required, as everywhere else."""
+
+    toxic: GenderedVariants
+    fun: GenderedVariants
+    happy: GenderedVariants
+    sad: GenderedVariants
+    depressive: GenderedVariants
+
+    def for_mood(self, mood: Mood) -> GenderedVariants:
+        value = getattr(self, mood.value)
+        assert isinstance(value, GenderedVariants)
+        return value
+
 
 class MoodText(Base):
     """A single line per mood, for things that are not picked from variants."""
@@ -51,8 +87,23 @@ class MoodText(Base):
 
 
 class AttendanceMessages(Base):
-    #: Must carry {date} and {office}; the roster is appended below it.
+    """The daily reminder.
+
+    The division of labour here is the whole point. Everything factual — the weekday, the
+    date, the office, who is listed — is substituted by us into `intro`. The model only
+    ever supplies `{tail}` and an epithet, neither of which may contain a fact. That is
+    what makes "В понедельник В понедельник" impossible rather than merely unlikely.
+    """
+
+    #: Must carry {when}, {date}, {office} and {tail}; the roster is appended below it.
     intro: MoodVariants
+    #: Fallback flavour for {tail} when the model is off, slow, or produced something the
+    #: guards rejected. Plain text: no tokens, or the substitution would be visible.
+    tails: MoodVariants
+    #: Fallback epithets, by mood and by gender, one per roster line.
+    epithets: MoodGendered
+    #: Decoration in front of each roster line. Ours, never the model's.
+    emojis: MoodVariants
     #: When the next working day has nobody on it.
     empty: MoodVariants
     #: When an already-announced day changes.
@@ -61,8 +112,10 @@ class AttendanceMessages(Base):
 
     @model_validator(mode="after")
     def intro_lines_carry_their_tokens(self) -> AttendanceMessages:
-        self.intro.require_tokens("{date}", "{office}")
-        self.empty.require_tokens("{date}")
+        self.intro.require_tokens("{when}", "{date}", "{office}", "{tail}")
+        self.empty.require_tokens("{when}", "{date}")
+        self.tails.forbid_braces()
+        self.emojis.forbid_braces()
         return self
 
 

@@ -29,12 +29,15 @@ class Mood(StrEnum):
 #: What `safeMode` forces, and what anything unparseable falls back to.
 SAFE_MOOD = Mood.FUN
 
+#: Mostly toxic, as asked for. `sad` and `depressive` are deliberately rare: they read as
+#: flat rather than funny, and a bot that lands there one day in five comes across as
+#: miserable rather than as having a personality.
 DEFAULT_WEIGHTS: Mapping[Mood, int] = {
     Mood.TOXIC: 55,
-    Mood.FUN: 15,
-    Mood.HAPPY: 10,
-    Mood.SAD: 10,
-    Mood.DEPRESSIVE: 10,
+    Mood.FUN: 25,
+    Mood.HAPPY: 12,
+    Mood.SAD: 5,
+    Mood.DEPRESSIVE: 3,
 }
 
 
