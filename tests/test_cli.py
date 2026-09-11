@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -113,10 +114,12 @@ def test_regenerate_requires_an_office() -> None:
 # --------------------------------------------------------------- deployment wiring
 
 
-def compose() -> dict:
+def compose() -> dict[str, Any]:
     import yaml
 
-    return yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
+    parsed = yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
+    assert isinstance(parsed, dict)
+    return parsed
 
 
 def test_the_database_lives_on_a_named_volume_not_a_bind_mount() -> None:
