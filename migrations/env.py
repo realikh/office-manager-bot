@@ -29,7 +29,13 @@ def _url() -> str:
     configured = config.get_main_option("sqlalchemy.url", "")
     if configured:
         return configured
-    return f"sqlite:///{database_path()}"
+
+    target = database_path()
+    # The application's engine factory creates this directory; Alembic builds its own
+    # engine and would not. On a fresh checkout — CI, or a clone on a new machine —
+    # `data/` does not exist and SQLite reports only "unable to open database file".
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return f"sqlite:///{target}"
 
 
 def run_migrations_offline() -> None:

@@ -241,3 +241,49 @@ def test_alerts_do_not_go_through_the_bot() -> None:
     source = Path("scripts/deploy.sh").read_text(encoding="utf-8")
     assert "api.telegram.org" in source
     assert "curl" in source
+
+
+# ----------------------------------------------------------------------- migrations
+
+
+def test_migrations_apply_and_match_the_models_from_a_clean_slate(tmp_path: Path) -> None:
+    """Reproduces a fresh checkout, where `data/` does not exist yet.
+
+    Two failures hid here and only surfaced in CI: Alembic builds its own engine and so
+    skipped the directory creation the application's engine factory does, and `check`
+    compares against a database at head, which an empty one is not. Both looked fine
+    locally purely because a database left over from an earlier run happened to exist.
+    """
+    import os
+    import subprocess
+
+    env = {**os.environ, "TABELSHCHIK_DB": str(tmp_path / "fresh" / "check.db")}
+
+    upgrade = subprocess.run(
+        ["uv", "run", "alembic", "upgrade", "head"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert upgrade.returncode == 0, upgrade.stderr
+
+    check = subprocess.run(
+        ["uv", "run", "alembic", "check"], capture_output=True, text=True, env=env
+    )
+    assert check.returncode == 0, (
+        "models and migrations disagree — a model was edited without a migration:\n"
+        + check.stdout
+        + check.stderr
+    )
+
+
+def test_ci_upgrades_before_checking_for_migration_drift() -> None:
+    """`alembic check` against an empty database reports "not up to date" rather than
+    anything about drift, so the order is load-bearing."""
+    step = next(
+        s for s in workflow()["jobs"]["check"]["steps"] if "alembic" in str(s.get("run", ""))
+    )
+    script = step["run"]
+    assert script.index("alembic upgrade head") < script.index("alembic check")
+    # Against a throwaway path, so a stray database is never left in the checkout.
+    assert "TABELSHCHIK_DB" in str(step.get("env", {}))

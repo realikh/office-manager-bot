@@ -26,8 +26,14 @@ jobs:
         run: uv run tabelshchik validate
       - name: Migrations match the models
         # Catches a model edited without a migration, which would otherwise only show up
-        # as a crash against a real database.
-        run: uv run alembic check
+        # as a crash against a real database. `check` compares the models against a
+        # database at head, so an empty one has to be brought up first — on a fresh
+        # checkout there is no database at all.
+        env:
+          TABELSHCHIK_DB: ${{ runner.temp }}/migration-check.db
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
       - name: Tests
         run: uv run pytest -q
 
