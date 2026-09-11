@@ -23,34 +23,70 @@ from tabelshchik.bootstrap.settings import config_dir, database_path, load_secre
 from tabelshchik.config.loader import ConfigError, load
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(prog="tabelshchik", description=__doc__)
-    parser.add_argument("--config", type=Path, default=None)
-    parser.add_argument("--db", type=Path, default=None)
-    parser.add_argument("--log-level", default="INFO")
-    parser.add_argument("--json-logs", action="store_true")
+def _global_options(*, suppress: bool) -> argparse.ArgumentParser:
+    """Options every command accepts, on either side of the subcommand.
+
+    Two subtleties, both of which produce a flag that parses and then does nothing:
+
+    * Defined only on the top-level parser, `tabelshchik run --json-logs` is a parse
+      error — and that is the order everyone types first.
+    * Shared via ``parents=`` with ordinary defaults, the subparser re-applies its
+      default over a value given *before* the subcommand. Hence ``SUPPRESS`` for the
+      subparser copies: an unset option is then absent from the namespace rather than
+      present-and-false, so it cannot overwrite anything.
+
+    A fresh parser is built per call on purpose. ``parents=`` shares action *objects*,
+    and ``set_defaults`` mutates ``action.default``, so one shared instance would carry
+    the top-level defaults into every subparser and undo the point of ``SUPPRESS``.
+    """
+    default = argparse.SUPPRESS if suppress else None
+    shared = argparse.ArgumentParser(add_help=False)
+    shared.add_argument("--config", type=Path, default=default)
+    shared.add_argument("--db", type=Path, default=default)
+    shared.add_argument("--log-level", default=argparse.SUPPRESS if suppress else "INFO")
+    shared.add_argument(
+        "--json-logs", action="store_true", default=argparse.SUPPRESS if suppress else False
+    )
+    return shared
+
+
+def build_parser() -> argparse.ArgumentParser:
+    inherited = _global_options(suppress=True)
+    parser = argparse.ArgumentParser(
+        prog="tabelshchik", description=__doc__, parents=[_global_options(suppress=False)]
+    )
 
     commands = parser.add_subparsers(dest="command", required=True)
-    commands.add_parser("run", help="run the bot")
-    commands.add_parser("validate", help="check the configuration and exit")
+    commands.add_parser("run", help="run the bot", parents=[inherited])
+    commands.add_parser("validate", help="check the configuration and exit", parents=[inherited])
 
-    regen = commands.add_parser("regenerate", help="rebuild a schedule")
+    regen = commands.add_parser("regenerate", help="rebuild a schedule", parents=[inherited])
     regen.add_argument("--office", required=True)
     regen.add_argument("--out", type=Path, default=Path("out"))
 
-    prev = commands.add_parser("preview", help="render a schedule and reminder, send nothing")
+    prev = commands.add_parser(
+        "preview", help="render a schedule and reminder, send nothing", parents=[inherited]
+    )
     prev.add_argument("--office", required=True)
     prev.add_argument("--out", type=Path, default=Path("out"))
 
-    sim = commands.add_parser("simulate", help="run the long-run fairness simulation")
+    sim = commands.add_parser(
+        "simulate", help="run the long-run fairness simulation", parents=[inherited]
+    )
     sim.add_argument("--weeks", type=int, default=52)
     sim.add_argument("--employees", type=int, default=12)
     sim.add_argument("--prune", action="store_true")
 
-    dry = commands.add_parser("dry-run", help="boot everything and send nothing")
+    dry = commands.add_parser(
+        "dry-run", help="boot everything and send nothing", parents=[inherited]
+    )
     dry.add_argument("--office", default=None)
 
-    args = parser.parse_args(argv)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
     configure_logging(args.log_level, json_output=args.json_logs)
 
     handlers = {
