@@ -153,3 +153,43 @@ def test_a_second_boot_does_not_rebuild_an_existing_schedule(services) -> None:
         for snapshot in services.schedule.days_between("ovest", today, today + timedelta(days=40))
     ]
     assert after == before
+
+
+async def test_the_first_boot_does_not_replay_work_from_before_the_bot_existed(
+    services,
+) -> None:
+    """An empty job ledger means no history. "Recovering" a missed reminder would fire
+    one at whatever hour the bot happened to be installed."""
+    from tabelshchik.bootstrap.lifespan import lifespan
+
+    async with lifespan(services) as runtime:
+        assert runtime.runner.jobs
+        # The catch-up sweep was skipped, so nothing was claimed.
+        assert services.jobs.recent(limit=5) == []
+
+
+async def test_a_later_boot_does_catch_up(services) -> None:
+    """Once there is history, a missed occurrence is replayed — the whole point."""
+    from datetime import datetime
+
+    from tabelshchik.bootstrap.lifespan import lifespan
+
+    # Pretend the bot has run before.
+    services.jobs.claim("seed:1", job="attendance", scheduled_for=datetime(2026, 1, 1))
+    services.jobs.complete("seed:1", at=datetime(2026, 1, 1))
+
+    async with lifespan(services) as runtime:
+        assert runtime.runner.jobs
+        keys = [key for _job, key, *_rest in services.jobs.recent(limit=50)]
+        assert any(key != "seed:1" for key in keys), "catch-up claimed nothing"
+
+
+def test_the_schedule_is_seeded_before_catch_up_runs() -> None:
+    """Ordering matters: a catch-up with no schedule marks the occurrence done and
+    swallows the reminder it was meant to recover."""
+    import inspect
+
+    from tabelshchik.bootstrap import lifespan as module
+
+    source = inspect.getsource(module.lifespan)
+    assert source.index("_seed_empty_schedules") < source.index("runner.catch_up")

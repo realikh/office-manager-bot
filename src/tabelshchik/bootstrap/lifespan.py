@@ -46,7 +46,15 @@ async def run_bot(services: Services) -> None:
     async with lifespan(services) as runtime:
         logger.info("scheduled jobs: %s", [job.name for job in runtime.runner.jobs])
         try:
-            await dispatcher.start_polling(bot, handle_signals=False)
+            await dispatcher.start_polling(
+                bot,
+                handle_signals=False,
+                # Telegram keeps undelivered updates for 24 hours. Answering a question
+                # asked before a restart is noise, and replaying admin button presses
+                # would be worse. Scheduled work is protected by the job ledger, not by
+                # this queue, so nothing important is lost.
+                drop_pending_updates=True,
+            )
         finally:
             await bot.session.close()
 
@@ -60,14 +68,23 @@ async def lifespan(services: Services) -> AsyncIterator[Runtime]:
     )
     register_jobs(runner, services)
 
-    # Before polling starts: whatever was missed while the process was down goes out now.
-    replayed = await runner.catch_up(
-        now=services.clock.now(), grace_hours=services.app.health.catch_up_grace_hours
-    )
-    if replayed:
-        logger.warning("replayed %s missed job(s) on startup", len(replayed))
-
+    # Seed first. A catch-up that runs before the schedule exists finds nothing to
+    # announce, marks the occurrence done, and so swallows the very reminder it is
+    # meant to recover.
     _seed_empty_schedules(services)
+
+    # Before polling starts, so a missed reminder goes out ahead of any user messages.
+    # Skipped entirely on a first-ever boot: an empty job ledger means there is no
+    # history to catch up on, and "recovering" work from before the bot existed would
+    # fire a reminder at whatever hour it happened to be installed.
+    if services.jobs.recent(limit=1):
+        replayed = await runner.catch_up(
+            now=services.clock.now(), grace_hours=services.app.health.catch_up_grace_hours
+        )
+        if replayed:
+            logger.warning("replayed %s missed job(s) on startup", len(replayed))
+    else:
+        logger.info("first run: no job history, nothing to catch up on")
 
     runner.start()
     runtime = Runtime(services=services, runner=runner)

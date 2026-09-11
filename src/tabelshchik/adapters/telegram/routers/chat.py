@@ -10,6 +10,7 @@ import logging
 
 from aiogram import F, Router
 from aiogram.enums import ChatType
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
 from tabelshchik.application.chat import answer
@@ -44,8 +45,15 @@ async def talk(message: Message, services: BotContext) -> None:
         clock=services.clock,
         policy=services.chat_policy,
     )
-    if reply.text:
+    if not reply.text:
+        return
+
+    try:
         await message.reply(reply.text)
+    except TelegramBadRequest:
+        # The message being replied to can be deleted between us reading it and
+        # answering. The answer is still worth sending; it just loses the threading.
+        await message.answer(reply.text)
 
 
 def _trigger_for(message: Message, services: BotContext) -> str | None:
