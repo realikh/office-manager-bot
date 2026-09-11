@@ -10,11 +10,21 @@ services:
     environment:
       TZ: Asia/Almaty
     volumes:
-      - ./data:/data
-      # Mounted read-only: config is edited in git and deployed, never written at runtime.
+      # A named volume, not a bind mount. The container runs as an unprivileged uid that
+      # will not match whoever owns a host directory, and Docker does not reconcile the
+      # two — a bind mount here fails with "unable to open database file" on first boot.
+      # Docker owns this volume, so the uid always lines up.
+      - tabelshchik-data:/data
+      # Read-only, so ownership never matters: config is deployed, never written at runtime.
       - ./config:/app/config:ro
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
+
+volumes:
+  tabelshchik-data:
+    # Survives `docker compose down` and `up --build`. Only `down -v` removes it, which
+    # is the one command that deletes the database — the schedule, the fairness ledger
+    # and every absence people have entered.

@@ -61,6 +61,12 @@ survives for tests and in-memory databases only. CI runs `alembic check`, which 
 a model was edited without a migration — otherwise that only shows up as a crash against
 a real database.
 
+**The database is a named Docker volume.** The image runs as uid 10001 and a bind mount
+would carry the host directory's ownership, which fails as "unable to open database
+file" on first boot and again on any new host. Docker owns a named volume, so the uid
+always lines up. The cost is that `down -v` destroys it; the nightly backup to the admin
+chat is the mitigation.
+
 **Synchronous database access.** A local SQLite file serving a few dozen people: queries
 are sub-millisecond, and an async driver would buy latency nobody can perceive in exchange
 for a dependency and a class of bugs. Slow work goes to `asyncio.to_thread` at the call

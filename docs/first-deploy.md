@@ -278,7 +278,20 @@ Config changes need a restart; roster changes made through `/admin` take effect
 immediately.
 
 Backups arrive nightly in your DM, and `/admin → 💾 Резервная копия` makes one on demand.
-To restore: `docker compose stop`, drop the file in as `data/tabelshchik.db`, start again.
+
+The database lives in a Docker named volume rather than a directory you can `ls`, because
+the container runs as an unprivileged uid that would not match a host directory's owner.
+To restore a backup:
+
+```bash
+docker compose stop
+docker compose cp tabelshchik.db tabelshchik:/data/tabelshchik.db
+docker compose start
+```
+
+**`docker compose down -v` deletes that volume**, and with it the schedule, the fairness
+ledger and every absence people have entered. Plain `down`, `restart` and
+`up -d --build` all leave it alone.
 
 ## If something goes wrong
 

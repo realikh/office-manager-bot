@@ -108,3 +108,44 @@ def test_an_unknown_command_is_refused() -> None:
 def test_regenerate_requires_an_office() -> None:
     with pytest.raises(SystemExit):
         parse("regenerate")
+
+
+# --------------------------------------------------------------- deployment wiring
+
+
+def compose() -> dict:
+    import yaml
+
+    return yaml.safe_load(Path("docker-compose.yml").read_text(encoding="utf-8"))
+
+
+def test_the_database_lives_on_a_named_volume_not_a_bind_mount() -> None:
+    """A bind mount cannot work: the image runs as an unprivileged uid that will not
+    match the host directory's owner, and the first boot fails with "unable to open
+    database file". Docker owns a named volume, so the uid always lines up."""
+    mounts = compose()["services"]["tabelshchik"]["volumes"]
+    data_mount = next(m for m in mounts if m.split(":")[1] == "/data")
+    source = data_mount.split(":")[0]
+
+    assert not source.startswith((".", "/")), f"/data is bind-mounted from {source!r}"
+    assert source in compose()["volumes"]
+
+
+def test_the_config_mount_is_read_only() -> None:
+    """Read-only means host ownership never matters, and config cannot drift from git."""
+    mounts = compose()["services"]["tabelshchik"]["volumes"]
+    config_mount = next(m for m in mounts if "/app/config" in m)
+    assert config_mount.endswith(":ro")
+
+
+def test_the_container_restarts_itself() -> None:
+    assert compose()["services"]["tabelshchik"]["restart"] == "unless-stopped"
+
+
+def test_the_database_path_is_inside_the_volume() -> None:
+    """The env default and the mount point have to agree, or the volume holds nothing."""
+    text = Path("Dockerfile").read_text(encoding="utf-8")
+    assert "TABELSHCHIK_DB=/data/" in text
+
+    mounts = compose()["services"]["tabelshchik"]["volumes"]
+    assert any(m.split(":")[1] == "/data" for m in mounts)
