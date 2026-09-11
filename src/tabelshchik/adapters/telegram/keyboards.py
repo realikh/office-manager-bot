@@ -97,6 +97,15 @@ def weekday_picker(office_id: str, action: str, values: dict[int, str]) -> Inlin
     return keyboard(*rows, (button("‹ Назад", f"adm:office:{office_id}"),))
 
 
+def cancel_keyboard() -> InlineKeyboardMarkup:
+    """Attached to every prompt that reads free text.
+
+    Typing /cancel works too, but a button is what people reach for — and typing it was
+    how an employee once got renamed to "/cancel".
+    """
+    return keyboard((button("✖️ Отмена", "adm:cancel"),))
+
+
 def confirm(action: str, *, back: str) -> InlineKeyboardMarkup:
     return keyboard(
         (button("✅ Да", action), button("✖️ Отмена", back)),

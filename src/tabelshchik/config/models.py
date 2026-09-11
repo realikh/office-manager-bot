@@ -153,6 +153,10 @@ class RetentionSection(Base):
     #: back more than a few days. Keeping them longer stores other people's conversation
     #: for no benefit.
     chat_messages_days: int = Field(default=7, ge=1, le=90)
+    #: Remembered facts are bounded by count already (a ring buffer per scope), but not by
+    #: age. Holding something the bot learned about a person indefinitely is not a thing
+    #: to do by omission.
+    chat_memory_days: int = Field(default=90, ge=1, le=730)
 
 
 class MoodWeight(Base):

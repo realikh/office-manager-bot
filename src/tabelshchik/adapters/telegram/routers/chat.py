@@ -18,6 +18,8 @@ from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
+from tabelshchik.adapters.telegram.routers.common import UNKNOWN
+from tabelshchik.application.audience import resolve
 from tabelshchik.application.chat import Thread, answer
 from tabelshchik.application.context import BotContext
 from tabelshchik.application.ports import CachedMessage
@@ -32,8 +34,28 @@ async def talk(message: Message, services: BotContext) -> None:
     if message.from_user is None or message.from_user.is_bot:
         return
 
-    # Cached before the trigger check, and whatever happens next: a message nobody
-    # addressed to the bot today is exactly the middle link a reply chain needs tomorrow.
+    is_private = message.chat.type == ChatType.PRIVATE
+    grant = resolve(
+        chat_id=message.chat.id,
+        user_id=message.from_user.id,
+        is_private=is_private,
+        offices=services.offices,
+        admin_ids=services.admin_ids,
+        today=services.clock.today(),
+    )
+
+    # Before anything is read, cached or sent. A stranger reaching the model would be
+    # handed a roster by name, and could write a fact into an office's shared memory that
+    # every employee's prompt then carries.
+    if grant.office_id is None:
+        if is_private:
+            await message.answer(UNKNOWN)
+        # In a group the bot was added to by mistake, silence: a refusal is still noise.
+        return
+
+    # Cached after the gate and before the trigger check: a message nobody addressed to
+    # the bot today is exactly the middle link a reply chain needs tomorrow, but a
+    # stranger's messages serve no chain we will ever build.
     _remember(services, message, author=_display_name(message))
 
     # Telegram hands us the immediate parent in full even when privacy mode kept us from
@@ -50,14 +72,10 @@ async def talk(message: Message, services: BotContext) -> None:
     if trigger is None or trigger not in services.chat_policy.triggers:
         return
 
-    office_id = _office_for(services, message)
-    if office_id is None:
-        return
-
     reply = await answer(
         question=_strip_mention(message, services),
         user_id=message.from_user.id,
-        office_id=office_id,
+        office_id=grant.office_id,
         offices=services.offices,
         schedule=services.schedule,
         usage=services.usage,
@@ -141,28 +159,6 @@ def _trigger_for(message: Message, services: BotContext) -> str | None:
         return "reply"
 
     return None
-
-
-def _office_for(services: BotContext, message: Message) -> str | None:
-    """Which office's schedule to answer from.
-
-    In a group that is the office whose chat it is. In a private message it is the
-    asker's own office, and failing that the first active one — so a stranger still
-    gets an answer rather than silence.
-    """
-    for office in services.offices.active_offices():
-        if office.chat_id == message.chat.id:
-            return office.id
-
-    if message.from_user is not None:
-        employee = services.offices.find_employee_by_user_id(message.from_user.id)
-        if employee is not None:
-            for office in services.offices.active_offices():
-                if any(e.id == employee.id for e in services.offices.employees(office.id)):
-                    return office.id
-
-    active = services.offices.active_offices()
-    return active[0].id if active else None
 
 
 def _strip_mention(message: Message, services: BotContext) -> str:

@@ -12,8 +12,9 @@ from datetime import timedelta
 from typing import Any
 
 from aiogram import BaseMiddleware, F, Router
+from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, TelegramObject
@@ -21,6 +22,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, Telegram
 from tabelshchik.adapters.reports.xlsx import build_workbook, schedule_caption
 from tabelshchik.adapters.telegram.keyboards import (
     WEEKDAY_LABELS,
+    cancel_keyboard,
     confirm,
     employee_card,
     employee_list,
@@ -64,6 +66,52 @@ SKIP = "-"
 #: 1000 would quietly guarantee a shortfall on that weekday forever.
 MAX_DESKS = 99
 
+#: Every step that reads free text uses these two. Registered *above* the state handlers
+#: on purpose: aiogram dispatches in registration order, and a state handler matches any
+#: message in its state — which is how typing `/cancel` during a rename renamed somebody
+#: to "/cancel" instead of cancelling.
+_IN_A_FLOW = (
+    SetDesks.waiting_for_count,
+    AddEmployee.waiting_for_name,
+    AddEmployee.waiting_for_username,
+    AddEmployee.waiting_for_gender,
+    EditEmployee.waiting_for_name,
+    EditEmployee.waiting_for_username,
+)
+
+COMMAND_IN_FLOW = "Это похоже на команду. Отправьте значение или нажмите «Отмена»."
+
+
+@router.message(Command("cancel"), StateFilter(*_IN_A_FLOW))
+async def cancel_admin_flow(message: Message, state: FSMContext) -> None:
+    """Admin mode needs its own cancel.
+
+    This router is registered before the employee one, but the only `/cancel` used to live
+    there — so cancelling a half-finished admin wizard answered with the *employee* menu.
+    """
+    await state.clear()
+    await message.answer("Отменено.", reply_markup=main_menu())
+
+
+@router.callback_query(F.data == "adm:cancel")
+async def cancel_button(query: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await _replace(query, "Отменено.", main_menu())
+
+
+async def _refused_a_command(message: Message) -> bool:
+    """True when the message was a command, and the caller should stop.
+
+    Free text is how a name, a handle and a number all arrive, so "/" is the one thing
+    that can never be meant as a value. Without this, any command typed mid-flow is
+    written as data — and a username pattern or an integer parser rejecting it elsewhere
+    is luck, not a design.
+    """
+    if not (message.text or "").lstrip().startswith("/"):
+        return False
+    await message.answer(COMMAND_IN_FLOW, reply_markup=cancel_keyboard())
+    return True
+
 
 class AdminOnly(BaseMiddleware):
     """One gate for the whole area.
@@ -87,6 +135,12 @@ class AdminOnly(BaseMiddleware):
 
 router.message.middleware(AdminOnly())
 router.callback_query.middleware(AdminOnly())
+
+# Private chats only, on top of the identity gate. Every admin screen names people —
+# rosters, usernames, the workbook — and `_replace` edits in whatever chat the button
+# lives in, so `/admin` typed in an unrelated group would publish all of it there.
+router.message.filter(F.chat.type == ChatType.PRIVATE)
+router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 
 
 @router.message(Command("admin"))
@@ -130,23 +184,28 @@ async def start_adding_employee(query: CallbackQuery, state: FSMContext) -> None
     await state.update_data(office_id=_tail(query))
     if isinstance(query.message, Message):
         await query.message.answer(
-            "Имя и фамилия нового сотрудника — как они должны выглядеть в напоминаниях.\n"
-            "/cancel — отмена."
+            "Имя и фамилия нового сотрудника — как они должны выглядеть в напоминаниях.",
+            reply_markup=cancel_keyboard(),
         )
 
 
 @router.message(AddEmployee.waiting_for_name)
 async def receive_new_name(message: Message, state: FSMContext) -> None:
+    if await _refused_a_command(message):
+        return
     await state.update_data(full_name=message.text or "")
     await state.set_state(AddEmployee.waiting_for_username)
     await message.answer(
         f"Telegram-ник без «@». Если его нет, отправьте «{SKIP}» — "
-        "человек сможет привязать себя сам через /start."
+        "человек сможет привязать себя сам через /start.",
+        reply_markup=cancel_keyboard(),
     )
 
 
 @router.message(AddEmployee.waiting_for_username)
 async def receive_new_username(message: Message, state: FSMContext) -> None:
+    if await _refused_a_command(message):
+        return
     raw = (message.text or "").strip()
     await state.update_data(username=None if raw in {SKIP, ""} else raw)
     await state.set_state(AddEmployee.waiting_for_gender)
@@ -310,11 +369,13 @@ async def start_rename(query: CallbackQuery, state: FSMContext) -> None:
     await state.set_state(EditEmployee.waiting_for_name)
     await state.update_data(employee_id=_tail(query))
     if isinstance(query.message, Message):
-        await query.message.answer("Новое имя и фамилия. /cancel — отмена.")
+        await query.message.answer("Новое имя и фамилия.", reply_markup=cancel_keyboard())
 
 
 @router.message(EditEmployee.waiting_for_name)
 async def apply_rename(message: Message, state: FSMContext, services: BotContext) -> None:
+    if await _refused_a_command(message):
+        return
     data = await state.get_data()
     employee_id = str(data.get("employee_id", ""))
     found = _find(services, employee_id)
@@ -349,12 +410,15 @@ async def start_setting_username(query: CallbackQuery, state: FSMContext) -> Non
     await state.update_data(employee_id=_tail(query))
     if isinstance(query.message, Message):
         await query.message.answer(
-            f"Telegram-ник без «@». Отправьте «{SKIP}», чтобы очистить. /cancel — отмена."
+            f"Telegram-ник без «@». Отправьте «{SKIP}», чтобы очистить.",
+            reply_markup=cancel_keyboard(),
         )
 
 
 @router.message(EditEmployee.waiting_for_username)
 async def apply_username(message: Message, state: FSMContext, services: BotContext) -> None:
+    if await _refused_a_command(message):
+        return
     data = await state.get_data()
     employee_id = str(data.get("employee_id", ""))
     found = _find(services, employee_id)
@@ -380,23 +444,6 @@ async def apply_username(message: Message, state: FSMContext, services: BotConte
 
     await state.clear()
     await message.answer("✅ Ник обновлён.")
-
-
-@router.message(Command("cancel"), SetDesks.waiting_for_count)
-@router.message(Command("cancel"), AddEmployee.waiting_for_name)
-@router.message(Command("cancel"), AddEmployee.waiting_for_username)
-@router.message(Command("cancel"), AddEmployee.waiting_for_gender)
-@router.message(Command("cancel"), EditEmployee.waiting_for_name)
-@router.message(Command("cancel"), EditEmployee.waiting_for_username)
-async def cancel_admin_flow(message: Message, state: FSMContext) -> None:
-    """Admin mode needs its own cancel.
-
-    This router is registered before the employee one, but the only `/cancel` used to live
-    there — so cancelling a half-finished admin wizard answered with the *employee* menu.
-    Filtering on the admin states keeps each flow's escape hatch its own.
-    """
-    await state.clear()
-    await message.answer("Отменено.", reply_markup=main_menu())
 
 
 def _find(services: BotContext, employee_id: str) -> tuple[str, Employee] | None:
@@ -438,12 +485,15 @@ async def start_setting_desks(
         name = services.voice.catalog.common.weekdays[weekday]
         await query.message.answer(
             f"Сколько свободных мест в {name}? Сейчас {current}.\n"
-            f"Отправьте число от 0 до {MAX_DESKS}. /cancel — отмена."
+            f"Отправьте число от 0 до {MAX_DESKS}.",
+            reply_markup=cancel_keyboard(),
         )
 
 
 @router.message(SetDesks.waiting_for_count)
 async def apply_desks(message: Message, state: FSMContext, services: BotContext) -> None:
+    if await _refused_a_command(message):
+        return
     data = await state.get_data()
     office_id = str(data.get("office_id", ""))
     weekday = int(data.get("weekday", 0))

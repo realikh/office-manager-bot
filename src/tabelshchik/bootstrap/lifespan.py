@@ -52,6 +52,7 @@ async def run_bot(services: Services) -> None:
         # Cosmetic: the bot works without a menu, so this must not stop it starting.
         logger.warning("could not publish the command menu", exc_info=True)
 
+    _check_admin_chat(services)
     dispatcher = create_dispatcher(services)
 
     async with lifespan(services) as runtime:
@@ -113,6 +114,23 @@ async def lifespan(services: Services) -> AsyncIterator[Runtime]:
             with contextlib.suppress(asyncio.CancelledError):
                 await runtime.heartbeat
         services.engine.dispose()
+
+
+def _check_admin_chat(services: Services) -> None:
+    """Telegram group ids are negative; user ids are positive.
+
+    The nightly job sends the **entire database** to this chat — names, usernames, user
+    ids, every schedule and absence — and `.env.example` documents it as "your own
+    Telegram user id". A private admin group is a legitimate choice, but it should be a
+    deliberate one rather than a paste that happened to be a group.
+    """
+    chat_id = services.secrets.admin_chat_id
+    if chat_id is not None and chat_id < 0:
+        logger.warning(
+            "ADMIN_CHAT_ID %s looks like a group chat. The nightly database backup and "
+            "every failure alert will be visible to everyone in it.",
+            chat_id,
+        )
 
 
 def _seed_empty_schedules(services: Services) -> None:

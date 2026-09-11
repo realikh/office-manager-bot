@@ -723,6 +723,12 @@ class SqlMaintenance(SqlRepository):
                 session.execute(delete(models.ChatMessage).where(models.ChatMessage.at < cutoff))
             )
 
+    def delete_chat_memory_before(self, cutoff: datetime) -> int:
+        with session_scope(self._sessions) as session:
+            return _rows_affected(
+                session.execute(delete(models.ChatMemory).where(models.ChatMemory.at < cutoff))
+            )
+
     def delete_absences_before(self, cutoff: date) -> int:
         with session_scope(self._sessions) as session:
             return _rows_affected(

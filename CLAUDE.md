@@ -111,6 +111,39 @@ docstring, where there is one, says what breaks in production if the test fails.
 
 ---
 
+## Who the bot will talk to
+
+**One gate, `application/audience.py`.** `resolve()` returns a `Grant` naming the audience
+and the office it may speak about, or `None` for nothing at all:
+
+| Situation | Audience | Office |
+|---|---|---|
+| chat id matches a configured office | `OFFICE_CHAT` | that office |
+| private, user id in `admin_ids` | `ADMIN` | their own, else first active |
+| private, linked **and in tenure** | `EMPLOYEE` | that employee's office |
+| anything else | `STRANGER` | `None` |
+
+Being in an office's group chat is itself the credential — the reminder posts that
+office's full tagged roster there every working day.
+
+It exists because the rule it replaced answered **everybody**: an unknown sender fell
+through to `active_offices()[0]`, so any account that found the bot could ask who was in
+tomorrow and be told by name, and could get a fact written into that office's shared
+memory that every employee's prompt then carried.
+
+Rules that follow from it, each with a test:
+
+- **The gate runs before anything reads, caches or sends.** Not after `_remember`, not
+  after the trigger check.
+- **Never add a fallback that cannot fail.** `office_id is None` must stay reachable.
+- **Tenure is checked at the gate**, not by clearing `telegram_user_id` on termination —
+  the link is what lets a reminder tag someone, and `restore` should just work.
+- `/start` decides via `audience.claim()`, which refuses a username match onto a record
+  somebody else already holds, and reports "unknown" for a departed employee so the bot is
+  not an oracle for testing handles against the roster.
+- **Screens that name other people are private-chat only** — the whole admin router, plus
+  `me:office` and `/menu`. `_replace` edits in whatever chat the button lives in.
+
 ## Traps
 
 These have all cost real time. They are ordered by how likely you are to hit them.
@@ -130,6 +163,20 @@ s = s.replace(old, new, 1)
 
 When applying several edits in one script, label each one and print on success, so a
 failure names which pattern went stale. Re-read a file after any `ruff format`.
+
+### A free-text FSM step must refuse commands
+
+Typing `/cancel` during a rename renamed the employee to `/cancel`. A state handler
+matches *any* message in its state, and aiogram dispatches in registration order, so it
+won over the cancel handler registered below it.
+
+Both halves are fixed and both are tested: cancel is registered first, and every free-text
+step calls `_refused_a_command(message)` before touching the text. Order alone is one
+reordering away from breaking. Prompts carry a `✖️ Отмена` button, because that is what
+people reach for.
+
+It was harmless in the other flows only because a username regex and an integer parser
+rejected the command — luck, not design.
 
 ### A handler must never redraw by calling another handler
 

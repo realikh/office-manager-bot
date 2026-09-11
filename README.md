@@ -175,6 +175,26 @@ Published automatically on startup, scoped by audience — nothing to configure 
 | `/help` | Also the only command published in groups |
 | `/admin` | Admins only |
 
+### Who the bot answers
+
+Three audiences, resolved in one place (`application/audience.py`):
+
+- **Anyone posting in a configured office chat.** That chat receives the full tagged
+  roster every working day, so there is nothing to withhold there.
+- **A linked employee, in a private chat**, while they are still in tenure.
+- **An admin**, in a private chat.
+
+Everyone else gets a short "I don't know you" and no data — no names, no schedule, no
+model call. A group the bot was added to that is not an office chat gets silence.
+
+`/start` links by matching your Telegram @username against the roster, which is a claim
+rather than a proof, so: a match onto a record somebody else already holds is refused, a
+departed employee reads as "unknown" (otherwise the bot is an oracle for testing handles),
+and every link — and every refusal — is reported to the admin chat.
+
+Admin mode, `/menu` and the office-week view are private-chat only. They name other
+people, and the screens redraw in whatever chat the button was pressed in.
+
 ### Telegram privacy mode
 
 Optional, and off by default in Telegram. With privacy **on** (the default) the bot

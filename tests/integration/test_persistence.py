@@ -564,10 +564,13 @@ def test_pruning_never_touches_people_offices_or_templates(sessions) -> None:
     assert context.template.desks_on(0) == 2
 
 
-def test_old_chat_messages_are_pruned_but_memory_is_not(sessions) -> None:
-    """The cache is other people's conversation, kept only long enough to rebuild a
-    reply chain. The facts the bot chose to keep are bounded by count, not by age, so
-    retention must not quietly empty them."""
+def test_chat_messages_and_memory_are_pruned_on_their_own_clocks(sessions) -> None:
+    """Two different things with two different lifetimes.
+
+    The cache is other people's conversation, kept only long enough to rebuild a reply
+    chain — days. A remembered fact is useful for months, but holding one about a person
+    indefinitely is not something to do by omission, so it expires too.
+    """
     from tabelshchik.adapters.clock import FixedClock
     from tabelshchik.adapters.db.repositories import (
         SqlChatMemoryStore,
@@ -583,21 +586,25 @@ def test_old_chat_messages_are_pruned_but_memory_is_not(sessions) -> None:
     now = datetime(2026, 9, 11, 12, 0)
     cache.remember(-100, CachedMessage(1, "Аня", "старое"), at=now - timedelta(days=30))
     cache.remember(-100, CachedMessage(2, "Аня", "свежее"), at=now)
-    SqlChatMemoryStore(sessions).remember(
-        memory.OFFICE, "ovest", "Стендап в 10:30", keep=5, at=now - timedelta(days=365)
-    )
+    memories = SqlChatMemoryStore(sessions)
+    memories.remember(memory.OFFICE, "ovest", "Забытое", keep=5, at=now - timedelta(days=365))
+    memories.remember(memory.OFFICE, "ovest", "Стендап в 10:30", keep=5, at=now)
 
     report = prune_history(
         offices=SqlOfficeStore(sessions),
         ledger=SqlLedgerStore(sessions),
         maintenance=SqlMaintenance(sessions),
         clock=FixedClock(now),
-        policy=RetentionPolicy(chat_messages_days=7),
+        policy=RetentionPolicy(chat_messages_days=7, chat_memory_days=90),
     )
 
     assert report.chat_messages_removed == 1
     assert [item.text for item in cache.chain(-100, 2, depth=5)] == ["свежее"]
-    assert SqlChatMemoryStore(sessions).facts(memory.OFFICE, "ovest", limit=5)
+
+    assert report.chat_memory_removed == 1
+    assert [item.fact for item in memories.facts(memory.OFFICE, "ovest", limit=5)] == [
+        "Стендап в 10:30"
+    ]
 
 
 def test_a_backup_produces_a_readable_copy(sessions, tmp_path) -> None:

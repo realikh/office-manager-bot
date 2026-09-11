@@ -35,6 +35,8 @@ class RetentionPolicy:
     #: Raw chat messages exist only to rebuild a reply chain, which nobody follows back
     #: more than a few days.
     chat_messages_days: int = 7
+    #: Remembered facts are bounded by count but not by age without this.
+    chat_memory_days: int = 90
     vacuum: bool = True
 
 
@@ -48,6 +50,7 @@ class PruneReport:
     ai_usage_removed: int = 0
     absences_removed: int = 0
     chat_messages_removed: int = 0
+    chat_memory_removed: int = 0
     bytes_before: int = 0
     bytes_after: int = 0
 
@@ -60,6 +63,7 @@ class PruneReport:
             or self.ai_usage_removed
             or self.absences_removed
             or self.chat_messages_removed
+            or self.chat_memory_removed
         )
 
 
@@ -110,6 +114,9 @@ def prune_history(
         absences_removed=maintenance.delete_absences_before(watermark),
         chat_messages_removed=maintenance.delete_chat_messages_before(
             _cutoff(now, policy.chat_messages_days)
+        ),
+        chat_memory_removed=maintenance.delete_chat_memory_before(
+            _cutoff(now, policy.chat_memory_days)
         ),
         bytes_before=bytes_before,
     )

@@ -10,12 +10,14 @@ import html
 from datetime import date, datetime, timedelta
 
 from aiogram import F, Router
+from aiogram.enums import ChatType
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from tabelshchik.adapters.telegram.keyboards import absence_list, employee_menu
+from tabelshchik.application.audience import linked
 from tabelshchik.application.context import BotContext
 from tabelshchik.application.manage_absences import (
     AbsenceError,
@@ -39,7 +41,14 @@ class AddAbsence(StatesGroup):
 
 
 def _employee(services: BotContext, user_id: int | None) -> Employee | None:
-    return services.offices.find_employee_by_user_id(user_id) if user_id else None
+    """The caller, if they still work here.
+
+    Tenure is what this adds. Ending a tenure leaves the Telegram link in place — on
+    purpose, so a restore just works and reminders can still tag people historically —
+    which meant somebody who left last month kept `/me`, `/vacation` and the whole
+    office's week for as long as the bot ran.
+    """
+    return linked(services.offices, user_id, services.clock.today())
 
 
 def _office_of(services: BotContext, employee_id: str) -> str | None:
@@ -101,8 +110,10 @@ async def days_callback(query: CallbackQuery, services: BotContext) -> None:
         await query.message.answer(render_my_days(services, query.from_user.id))
 
 
-@router.callback_query(F.data == "me:office")
+@router.callback_query(F.data == "me:office", F.message.chat.type == ChatType.PRIVATE)
 async def office_week(query: CallbackQuery, services: BotContext) -> None:
+    """Private only: this one names everybody, unlike the other `me:` screens, which show
+    the caller their own data and are theirs to publish wherever they like."""
     await query.answer()
     employee = _employee(services, query.from_user.id)
     if employee is None or not isinstance(query.message, Message):
@@ -147,6 +158,12 @@ async def cancel(message: Message, state: FSMContext) -> None:
 
 @router.message(AddAbsence.waiting_for_dates)
 async def receive_dates(message: Message, state: FSMContext, services: BotContext) -> None:
+    # A command is never a date. It only fails to become one here because `_parse_dates`
+    # rejects it, which is luck; the admin flows lost a name to exactly this.
+    if (message.text or "").lstrip().startswith("/"):
+        await message.answer(DATE_HELP)
+        return
+
     employee = _employee(services, message.from_user.id if message.from_user else None)
     if employee is None:
         await state.clear()

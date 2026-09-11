@@ -195,6 +195,42 @@ def test_an_unknown_office_is_reported_rather_than_rendered(ctx) -> None:
 # ------------------------------------------------------- the rule, not just the symptom
 
 
+def test_no_free_text_step_accepts_a_command() -> None:
+    """Typing /cancel during a rename renamed the employee to "/cancel".
+
+    `apply_rename` was registered before the cancel handler, and a state handler matches
+    *any* message in its state, so it won and wrote the command as data. Registration
+    order now puts cancel first, but order alone is one reordering away from breaking:
+    every step that reads free text must refuse a command itself.
+    """
+    bodies = re.split(r"\n(?=@router\.)", ADMIN_SOURCE)
+    offenders = [
+        body.split("async def ")[1].split("(")[0]
+        for body in bodies
+        if re.search(r"@router\.message\((?:SetDesks|AddEmployee|EditEmployee)\.", body)
+        and "_refused_a_command(message)" not in body
+    ]
+    assert not offenders, f"state handlers that would swallow a command: {offenders}"
+
+
+def test_the_cancel_handler_is_registered_before_any_state_handler() -> None:
+    """Belt to the guard's braces: aiogram dispatches in registration order."""
+    cancel = ADMIN_SOURCE.index("async def cancel_admin_flow")
+    first_state = min(
+        ADMIN_SOURCE.index(f"@router.message({state}.")
+        for state in ("SetDesks", "AddEmployee", "EditEmployee")
+    )
+    assert cancel < first_state
+
+
+def test_every_free_text_prompt_offers_a_cancel_button() -> None:
+    """Because people reach for a button, and typing the command is what went wrong."""
+    prompts = re.findall(r"await query\.message\.answer\(\s*\n?(.*?)\n\s*\)", ADMIN_SOURCE, re.S)
+    asking = [text for text in prompts if "Отправьте" in text or "Имя и фамилия" in text]
+    assert asking, "no free-text prompts found — has the wording changed?"
+    assert all("cancel_keyboard()" in text for text in asking)
+
+
 def test_no_handler_redraws_by_calling_another_handler() -> None:
     """The structural rule. Handlers parse `query.data`; screens take arguments.
 

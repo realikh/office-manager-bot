@@ -44,6 +44,7 @@ retention:
   auditDays: 180
   aiUsageDays: 60
   chatMessagesDays: 7       # raw messages, kept only to rebuild a reply chain
+  chatMemoryDays: 90        # facts the bot chose to remember
 
 personality:
   enabled: true

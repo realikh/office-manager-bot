@@ -143,6 +143,7 @@ class Services:
             audit_days=section.audit_days,
             ai_usage_days=section.ai_usage_days,
             chat_messages_days=section.chat_messages_days,
+            chat_memory_days=section.chat_memory_days,
         )
 
     @property
@@ -171,6 +172,11 @@ class Services:
     @property
     def admin_ids(self) -> frozenset[int]:
         return frozenset(self.secrets.admin_ids or self.app.admins)
+
+    @property
+    def admin_chat_id(self) -> int | None:
+        """Where alerts and backups go. A Telegram *chat* id, not a user id list."""
+        return self.secrets.admin_chat_id
 
     def is_admin(self, user_id: int | None) -> bool:
         return user_id is not None and user_id in self.admin_ids
