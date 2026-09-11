@@ -16,13 +16,13 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
 from tabelshchik.adapters.telegram.keyboards import absence_list, employee_menu
+from tabelshchik.application.context import BotContext
 from tabelshchik.application.manage_absences import (
     AbsenceError,
     add_absence,
     remove_absence,
 )
 from tabelshchik.application.voice import format_date
-from tabelshchik.bootstrap.container import Services
 from tabelshchik.domain.entities import Employee
 
 router = Router(name="employee")
@@ -38,18 +38,18 @@ class AddAbsence(StatesGroup):
     waiting_for_dates = State()
 
 
-def _employee(services: Services, user_id: int | None) -> Employee | None:
+def _employee(services: BotContext, user_id: int | None) -> Employee | None:
     return services.offices.find_employee_by_user_id(user_id) if user_id else None
 
 
-def _office_of(services: Services, employee_id: str) -> str | None:
+def _office_of(services: BotContext, employee_id: str) -> str | None:
     for office in services.offices.active_offices():
         if any(e.id == employee_id for e in services.offices.employees(office.id)):
             return office.id
     return None
 
 
-def render_my_days(services: Services, user_id: int | None) -> str:
+def render_my_days(services: BotContext, user_id: int | None) -> str:
     employee = _employee(services, user_id)
     if employee is None:
         return NOT_LINKED
@@ -68,18 +68,18 @@ def render_my_days(services: Services, user_id: int | None) -> str:
 
 
 @router.message(Command("me"))
-async def my_days(message: Message, services: Services) -> None:
+async def my_days(message: Message, services: BotContext) -> None:
     user_id = message.from_user.id if message.from_user else None
     await message.answer(render_my_days(services, user_id))
 
 
 @router.message(Command("vacation"))
-async def my_absences(message: Message, services: Services) -> None:
+async def my_absences(message: Message, services: BotContext) -> None:
     await _show_absences(message, services, message.from_user.id if message.from_user else None)
 
 
 @router.callback_query(F.data == "me:absences")
-async def absences_callback(query: CallbackQuery, services: Services) -> None:
+async def absences_callback(query: CallbackQuery, services: BotContext) -> None:
     await query.answer()
     if isinstance(query.message, Message):
         await _show_absences(query.message, services, query.from_user.id)
@@ -93,7 +93,7 @@ async def back_to_menu(query: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "me:days")
-async def days_callback(query: CallbackQuery, services: Services) -> None:
+async def days_callback(query: CallbackQuery, services: BotContext) -> None:
     await query.answer()
     if isinstance(query.message, Message):
         # The callback's from_user is the person who pressed the button; the message's
@@ -102,7 +102,7 @@ async def days_callback(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data == "me:office")
-async def office_week(query: CallbackQuery, services: Services) -> None:
+async def office_week(query: CallbackQuery, services: BotContext) -> None:
     await query.answer()
     employee = _employee(services, query.from_user.id)
     if employee is None or not isinstance(query.message, Message):
@@ -142,7 +142,7 @@ async def cancel(message: Message, state: FSMContext) -> None:
 
 
 @router.message(AddAbsence.waiting_for_dates)
-async def receive_dates(message: Message, state: FSMContext, services: Services) -> None:
+async def receive_dates(message: Message, state: FSMContext, services: BotContext) -> None:
     employee = _employee(services, message.from_user.id if message.from_user else None)
     if employee is None:
         await state.clear()
@@ -194,7 +194,7 @@ async def receive_dates(message: Message, state: FSMContext, services: Services)
 
 
 @router.callback_query(F.data.startswith("me:absdel:"))
-async def delete_absence(query: CallbackQuery, services: Services) -> None:
+async def delete_absence(query: CallbackQuery, services: BotContext) -> None:
     await query.answer()
     employee = _employee(services, query.from_user.id)
     if employee is None or not isinstance(query.message, Message):
@@ -227,7 +227,7 @@ async def delete_absence(query: CallbackQuery, services: Services) -> None:
     await _show_absences(query.message, services, query.from_user.id)
 
 
-async def _show_absences(message: Message, services: Services, user_id: int | None) -> None:
+async def _show_absences(message: Message, services: BotContext, user_id: int | None) -> None:
     employee = _employee(services, user_id)
     if employee is None:
         await message.answer(NOT_LINKED)
@@ -244,7 +244,7 @@ async def _show_absences(message: Message, services: Services, user_id: int | No
 
 
 async def _notify_corrections(
-    services: Services, office_id: str, days: tuple[date, ...], employee: Employee
+    services: BotContext, office_id: str, days: tuple[date, ...], employee: Employee
 ) -> None:
     """Tell the chat when an absence lands on a day that was already announced."""
     if not days or services.notifier is None:

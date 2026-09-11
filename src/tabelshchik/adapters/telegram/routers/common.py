@@ -9,7 +9,7 @@ from aiogram.filters import Command, CommandStart
 from aiogram.types import Message
 
 from tabelshchik.adapters.telegram.keyboards import employee_menu, main_menu
-from tabelshchik.bootstrap.container import Services
+from tabelshchik.application.context import BotContext
 
 router = Router(name="common")
 
@@ -20,7 +20,7 @@ UNKNOWN = (
 
 
 @router.message(CommandStart())
-async def start(message: Message, services: Services) -> None:
+async def start(message: Message, services: BotContext) -> None:
     user = message.from_user
     if user is None:
         return
@@ -39,7 +39,7 @@ async def start(message: Message, services: Services) -> None:
 
 
 @router.message(Command("help"))
-async def help_command(message: Message, services: Services) -> None:
+async def help_command(message: Message, services: BotContext) -> None:
     lines = [
         "<b>Табельщик</b> — учёт присутствия в офисе.",
         "",
@@ -55,14 +55,14 @@ async def help_command(message: Message, services: Services) -> None:
 
 
 @router.message(Command("menu"))
-async def menu(message: Message, services: Services) -> None:
+async def menu(message: Message, services: BotContext) -> None:
     if services.is_admin(message.from_user.id if message.from_user else None):
         await message.answer("Меню администратора:", reply_markup=main_menu())
         return
     await message.answer("Меню:", reply_markup=employee_menu())
 
 
-def _resolve(services: Services, user_id: int, username: str | None):  # type: ignore[no-untyped-def]
+def _resolve(services: BotContext, user_id: int, username: str | None):  # type: ignore[no-untyped-def]
     found = services.offices.find_employee_by_user_id(user_id)
     if found is not None:
         return found

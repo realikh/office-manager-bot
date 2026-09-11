@@ -15,13 +15,13 @@ from aiogram.enums import ParseMode
 from aiogram.types import TelegramObject
 
 from tabelshchik.adapters.telegram.routers import admin, chat, common, employee
-from tabelshchik.bootstrap.container import Services
+from tabelshchik.application.context import BotContext
 
 
 class ServicesMiddleware(BaseMiddleware):
     """Hands every handler the container, so nothing reaches for a global."""
 
-    def __init__(self, services: Services) -> None:
+    def __init__(self, services: BotContext) -> None:
         self.services = services
 
     async def __call__(
@@ -38,7 +38,7 @@ def create_bot(token: str) -> Bot:
     return Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 
 
-def create_dispatcher(services: Services) -> Dispatcher:
+def create_dispatcher(services: BotContext) -> Dispatcher:
     dispatcher = Dispatcher()
     middleware = ServicesMiddleware(services)
     dispatcher.message.middleware(middleware)

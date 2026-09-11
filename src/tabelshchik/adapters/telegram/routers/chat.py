@@ -13,7 +13,7 @@ from aiogram.enums import ChatType
 from aiogram.types import Message
 
 from tabelshchik.application.chat import answer
-from tabelshchik.bootstrap.container import Services
+from tabelshchik.application.context import BotContext
 
 logger = logging.getLogger(__name__)
 
@@ -21,7 +21,7 @@ router = Router(name="chat")
 
 
 @router.message(F.text)
-async def talk(message: Message, services: Services) -> None:
+async def talk(message: Message, services: BotContext) -> None:
     if message.from_user is None or message.from_user.is_bot:
         return
 
@@ -48,7 +48,7 @@ async def talk(message: Message, services: Services) -> None:
         await message.reply(reply.text)
 
 
-def _trigger_for(message: Message, services: Services) -> str | None:
+def _trigger_for(message: Message, services: BotContext) -> str | None:
     if message.chat.type == ChatType.PRIVATE:
         return "private"
 
@@ -64,7 +64,7 @@ def _trigger_for(message: Message, services: Services) -> str | None:
     return None
 
 
-def _office_for(services: Services, message: Message) -> str | None:
+def _office_for(services: BotContext, message: Message) -> str | None:
     """Which office's schedule to answer from.
 
     In a group that is the office whose chat it is. In a private message it is the
@@ -86,7 +86,7 @@ def _office_for(services: Services, message: Message) -> str | None:
     return active[0].id if active else None
 
 
-def _strip_mention(message: Message, services: Services) -> str:
+def _strip_mention(message: Message, services: BotContext) -> str:
     text = message.text or ""
     username = services.bot_username
     if username:

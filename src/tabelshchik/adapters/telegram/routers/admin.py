@@ -25,10 +25,10 @@ from tabelshchik.adapters.telegram.keyboards import (
     weekday_picker,
 )
 from tabelshchik.application.build_report import ReportDay, build_report
+from tabelshchik.application.context import BotContext
 from tabelshchik.application.regenerate_schedule import regenerate
 from tabelshchik.application.send_attendance_reminder import send_attendance_reminder
 from tabelshchik.application.voice import format_date
-from tabelshchik.bootstrap.container import Services
 from tabelshchik.domain.entities import SCALE
 
 router = Router(name="admin")
@@ -47,7 +47,7 @@ class AdminOnly(BaseMiddleware):
         event: TelegramObject,
         data: dict[str, Any],
     ) -> Any:
-        services: Services = data["services"]
+        services: BotContext = data["services"]
         user = data.get("event_from_user")
         if user is None or not services.is_admin(user.id):
             return None
@@ -69,13 +69,13 @@ async def back(query: CallbackQuery) -> None:
 
 
 @router.callback_query(F.data == "adm:offices")
-async def offices(query: CallbackQuery, services: Services) -> None:
+async def offices(query: CallbackQuery, services: BotContext) -> None:
     entries = [(office.id, office.name) for office in services.offices.active_offices()]
     await _replace(query, "Выберите офис:", office_list(entries))
 
 
 @router.callback_query(F.data.startswith("adm:office:"))
-async def office(query: CallbackQuery, services: Services) -> None:
+async def office(query: CallbackQuery, services: BotContext) -> None:
     office_id = _tail(query)
     found = services.offices.get_office(office_id)
     if found is None:
@@ -92,7 +92,7 @@ async def office(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:emp:"))
-async def employees(query: CallbackQuery, services: Services) -> None:
+async def employees(query: CallbackQuery, services: BotContext) -> None:
     office_id = _tail(query)
     today = services.clock.today()
     roster = services.offices.employees(office_id)
@@ -116,7 +116,7 @@ async def employees(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:desks:"))
-async def desks(query: CallbackQuery, services: Services) -> None:
+async def desks(query: CallbackQuery, services: BotContext) -> None:
     office_id = _tail(query)
     context = _context(services, office_id)
     values = {weekday: str(context.template.desks_on(weekday)) for weekday in range(5)}
@@ -128,7 +128,7 @@ async def desks(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:desk:"))
-async def cycle_desks(query: CallbackQuery, services: Services) -> None:
+async def cycle_desks(query: CallbackQuery, services: BotContext) -> None:
     _, _, office_id, weekday_raw = str(query.data).split(":")
     weekday = int(weekday_raw)
     context = _context(services, office_id)
@@ -144,7 +144,7 @@ async def cycle_desks(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:fix:"))
-async def fixed(query: CallbackQuery, services: Services) -> None:
+async def fixed(query: CallbackQuery, services: BotContext) -> None:
     office_id = _tail(query)
     context = _context(services, office_id)
     values = {weekday: str(len(context.template.fixed_on(weekday))) or "0" for weekday in range(5)}
@@ -156,7 +156,7 @@ async def fixed(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:fixday:"))
-async def fixed_day(query: CallbackQuery, services: Services) -> None:
+async def fixed_day(query: CallbackQuery, services: BotContext) -> None:
     _, _, office_id, weekday_raw = str(query.data).split(":")
     weekday = int(weekday_raw)
     context = _context(services, office_id)
@@ -180,7 +180,7 @@ async def fixed_day(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:fixtog:"))
-async def toggle_fixed(query: CallbackQuery, services: Services) -> None:
+async def toggle_fixed(query: CallbackQuery, services: BotContext) -> None:
     _, _, office_id, weekday_raw, employee_id = str(query.data).split(":", 4)
     now_fixed = services.roster.toggle_fixed(office_id, int(weekday_raw), employee_id)
     services.audit.record(
@@ -197,7 +197,7 @@ async def toggle_fixed(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:regen:"))
-async def regenerate_office(query: CallbackQuery, services: Services) -> None:
+async def regenerate_office(query: CallbackQuery, services: BotContext) -> None:
     office_id = _tail(query)
     await query.answer("Считаю…")
 
@@ -227,7 +227,7 @@ async def regenerate_office(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:reseed:"))
-async def reseed(query: CallbackQuery, services: Services) -> None:
+async def reseed(query: CallbackQuery, services: BotContext) -> None:
     office_id = _tail(query)
     services.roster.bump_seed(office_id)
     await query.answer("Перемешано — теперь перегенерируйте.")
@@ -235,7 +235,7 @@ async def reseed(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:preview:"))
-async def preview(query: CallbackQuery, services: Services) -> None:
+async def preview(query: CallbackQuery, services: BotContext) -> None:
     """Renders next week without touching the office chat."""
     office_id = _tail(query)
     await query.answer()
@@ -256,7 +256,7 @@ async def preview(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data.startswith("adm:test:"))
-async def test_reminder(query: CallbackQuery, services: Services) -> None:
+async def test_reminder(query: CallbackQuery, services: BotContext) -> None:
     """Sends the real reminder to the admin only, so it can be checked before a group
     sees it."""
     office_id = _tail(query)
@@ -278,7 +278,7 @@ async def test_reminder(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data == "adm:fair")
-async def fairness(query: CallbackQuery, services: Services) -> None:
+async def fairness(query: CallbackQuery, services: BotContext) -> None:
     """Separates an unfair template from an unfair algorithm."""
     blocks: list[str] = []
 
@@ -304,14 +304,14 @@ async def fairness(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data == "adm:mood")
-async def mood_menu(query: CallbackQuery, services: Services) -> None:
+async def mood_menu(query: CallbackQuery, services: BotContext) -> None:
     today = services.clock.today()
     lines = [
         f"• {html.escape(item.name)}: "
         f"<b>{services.voice.mood_for(office_id=item.id, day=today).value}</b>"
         for item in services.offices.active_offices()
     ]
-    safe = "включён" if services.app.personality.safe_mode else "выключен"
+    safe = "включён" if services.voice.moods.safe_mode else "выключен"
     body = "\n".join(lines) + f"\n\nБезопасный режим: {safe}."
     await _replace(
         query,
@@ -321,7 +321,7 @@ async def mood_menu(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data == "adm:status")
-async def status(query: CallbackQuery, services: Services) -> None:
+async def status(query: CallbackQuery, services: BotContext) -> None:
     recent = services.jobs.recent(limit=8)
     lines = [
         f"• {job} — {moment:%d.%m %H:%M} — {state}" for job, _key, moment, state in recent
@@ -336,7 +336,7 @@ async def status(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data == "adm:config")
-async def check_config(query: CallbackQuery, services: Services) -> None:
+async def check_config(query: CallbackQuery, services: BotContext) -> None:
     """Validates the files on disk without applying them."""
     from tabelshchik.config.loader import ConfigError, load
 
@@ -358,7 +358,7 @@ async def check_config(query: CallbackQuery, services: Services) -> None:
 
 
 @router.callback_query(F.data == "adm:backup")
-async def backup(query: CallbackQuery, services: Services) -> None:
+async def backup(query: CallbackQuery, services: BotContext) -> None:
     await query.answer("Готовлю копию…")
     if not isinstance(query.message, Message) or services.notifier is None:
         return
@@ -381,7 +381,9 @@ async def backup(query: CallbackQuery, services: Services) -> None:
     )
 
 
-async def _send_workbook(message: Message, services: Services, office_id: str, result: Any) -> None:
+async def _send_workbook(
+    message: Message, services: BotContext, office_id: str, result: Any
+) -> None:
     if services.notifier is None:
         return
 
@@ -424,7 +426,7 @@ async def _send_workbook(message: Message, services: Services, office_id: str, r
     )
 
 
-def _context(services: Services, office_id: str):  # type: ignore[no-untyped-def]
+def _context(services: BotContext, office_id: str):  # type: ignore[no-untyped-def]
     today = services.clock.today()
     return services.offices.planning_context(office_id, start=today, end=today)
 

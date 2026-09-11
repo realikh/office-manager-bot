@@ -40,7 +40,21 @@ from tabelshchik.application.policy import (
     SilentPolicy,
     TempoPolicy,
 )
-from tabelshchik.application.ports import ChatModel, Notifier
+from tabelshchik.application.ports import (
+    AbsenceStore,
+    AuditLog,
+    ChatModel,
+    Clock,
+    JobLedger,
+    LedgerStore,
+    MaintenanceStore,
+    MoodStore,
+    Notifier,
+    OfficeStore,
+    RosterStore,
+    ScheduleStore,
+    UsageStore,
+)
 from tabelshchik.application.prune_history import RetentionPolicy
 from tabelshchik.application.voice import Voice
 from tabelshchik.bootstrap.mapping import (
@@ -67,22 +81,24 @@ class Services:
     engine: Engine
     sessions: sessionmaker[Session]
 
-    clock: SystemClock
+    clock: Clock
     voice: Voice
     notifier: Notifier | None = None
     #: Learned from Telegram at startup; needed to recognise an @mention.
     bot_username: str = ""
 
-    offices: SqlOfficeStore = field(init=False)
-    schedule: SqlScheduleStore = field(init=False)
-    ledger: SqlLedgerStore = field(init=False)
-    absences: SqlAbsenceStore = field(init=False)
-    roster: SqlRosterStore = field(init=False)
-    usage: SqlUsageStore = field(init=False)
-    moods: SqlMoodStore = field(init=False)
-    jobs: SqlJobLedger = field(init=False)
-    audit: SqlAuditLog = field(init=False)
-    maintenance: SqlMaintenance = field(init=False)
+    # Declared as the ports, not the SQL classes: handlers depend on the protocol, and a
+    # mutable attribute typed by its implementation would not satisfy one.
+    offices: OfficeStore = field(init=False)
+    schedule: ScheduleStore = field(init=False)
+    ledger: LedgerStore = field(init=False)
+    absences: AbsenceStore = field(init=False)
+    roster: RosterStore = field(init=False)
+    usage: UsageStore = field(init=False)
+    moods: MoodStore = field(init=False)
+    jobs: JobLedger = field(init=False)
+    audit: AuditLog = field(init=False)
+    maintenance: MaintenanceStore = field(init=False)
 
     def __post_init__(self) -> None:
         self.offices = SqlOfficeStore(self.sessions)
