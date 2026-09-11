@@ -50,6 +50,8 @@ ignore = ["RUF001", "RUF002", "RUF003"]  # ambiguous unicode: we write Russian
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["ARG"]
+# Test doubles exist to satisfy a port's signature; the unused arguments are the point.
+"src/tabelshchik/adapters/fakes.py" = ["ARG002"]
 
 [tool.mypy]
 python_version = "3.13"

@@ -358,3 +358,20 @@ def test_everyone_taking_the_same_day_leaves_surpluses_equal() -> None:
     result = solve(instance)
     assert len(result.on(ANCHOR)) == 5
     assert len(set(surplus_vector(instance, result.drafted))) == 1
+
+
+def test_seeds_fit_in_a_signed_64_bit_column() -> None:
+    """Seeds are persisted, and SQLite's INTEGER is signed — an unsigned 64-bit hash
+    overflows on write about half the time."""
+    from tabelshchik.domain.rng import stable_hash
+
+    limit = (1 << 63) - 1
+    for index in range(2000):
+        value = stable_hash("office", f"2026-09-{index % 28 + 1:02d}", index)
+        assert 0 <= value <= limit
+
+
+def test_stable_hash_does_not_collide_across_part_boundaries() -> None:
+    from tabelshchik.domain.rng import stable_hash
+
+    assert stable_hash("ab", "c") != stable_hash("a", "bc")

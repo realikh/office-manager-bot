@@ -11,12 +11,17 @@ import hashlib
 from collections.abc import Iterable
 
 _DIGEST_BYTES = 8
-_MASK = (1 << (_DIGEST_BYTES * 8)) - 1
+#: 63 bits, not 64: these values are persisted, and SQLite's INTEGER is a *signed*
+#: 64-bit type, so an unsigned 64-bit hash overflows on write about half the time.
+_MASK = (1 << 63) - 1
 
 
 def stable_hash(*parts: object) -> int:
-    """A reproducible 64-bit hash of ``parts``, joined by a separator that cannot appear
-    in the rendered pieces themselves."""
+    """A reproducible non-negative 63-bit hash of ``parts``.
+
+    Parts are joined by a separator that cannot appear in the rendered pieces, so
+    ``("ab", "c")`` and ``("a", "bc")`` do not collide.
+    """
     payload = "\x1f".join(str(part) for part in parts).encode("utf-8")
     digest = hashlib.blake2b(payload, digest_size=_DIGEST_BYTES).digest()
     return int.from_bytes(digest, "big") & _MASK

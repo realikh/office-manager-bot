@@ -166,6 +166,34 @@ def render_static(template: str, *, date_text: str, office_name: str) -> str:
     return rendered.replace(OFFICE_TOKEN, f"«{html.escape(office_name)}»")
 
 
+def mention(
+    full_name: str, *, telegram_user_id: int | None = None, username: str | None = None
+) -> str:
+    """Tag one person.
+
+    A ``tg://user?id=`` link is preferred because it reaches people who have no
+    @username at all, which a plain @mention cannot do. The username is the fallback,
+    and a bare name is better than nothing.
+    """
+    name = html.escape(full_name)
+    if telegram_user_id is not None:
+        return f'<a href="tg://user?id={telegram_user_id}">{name}</a>'
+    if username:
+        return f"{name} (@{html.escape(username.lstrip('@'))})"
+    return name
+
+
+def roster_fingerprint(employee_ids: Iterable[str]) -> str:
+    """Identifies exactly who was announced for a day.
+
+    If an announced day's roster later differs, the reminder may legitimately be sent
+    again as a correction — and if it does not, a re-run must stay quiet.
+    """
+    from tabelshchik.domain.rng import stable_hash
+
+    return f"{stable_hash(*sorted(employee_ids)):016x}"
+
+
 def name_stems(names: Iterable[str]) -> set[str]:
     """Rough stems of every word in every name, for the forbidden-name check."""
     stems: set[str] = set()
