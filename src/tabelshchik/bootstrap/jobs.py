@@ -36,6 +36,7 @@ def register_jobs(runner: JobRunner, services: Services) -> None:
                     attendance.time.hour,
                     attendance.time.minute,
                     weekdays=attendance.weekdays,
+                    timezone=app.timezone,
                 ),
                 handler=_attendance_handler(services, office.id),
             )
@@ -44,7 +45,7 @@ def register_jobs(runner: JobRunner, services: Services) -> None:
             Job(
                 name="tempo",
                 scope=office.id,
-                trigger=daily_at(9, 0),
+                trigger=daily_at(9, 0, timezone=app.timezone),
                 handler=_tempo_handler(services, office.id),
             )
         )
@@ -56,6 +57,7 @@ def register_jobs(runner: JobRunner, services: Services) -> None:
                     app.schedule.auto_extend.time.hour,
                     app.schedule.auto_extend.time.minute,
                     weekdays=frozenset({app.schedule.auto_extend.weekday_number}),
+                    timezone=app.timezone,
                 ),
                 handler=_extend_handler(services, office.id),
             )
@@ -64,7 +66,7 @@ def register_jobs(runner: JobRunner, services: Services) -> None:
     runner.add(
         Job(
             name="prune",
-            trigger=daily_at(3, 30),
+            trigger=daily_at(3, 30, timezone=app.timezone),
             handler=_prune_handler(services),
             # A missed prune is not worth replaying: tomorrow's run does the same work.
             catch_up=False,
@@ -75,7 +77,7 @@ def register_jobs(runner: JobRunner, services: Services) -> None:
         runner.add(
             Job(
                 name="backup",
-                trigger=daily_at(4, 0),
+                trigger=daily_at(4, 0, timezone=app.timezone),
                 handler=_backup_handler(services),
                 catch_up=False,
             )

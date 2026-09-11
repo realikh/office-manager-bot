@@ -181,8 +181,22 @@ def _aware(moment: datetime, zone: ZoneInfo) -> datetime:
     return moment if moment.tzinfo else moment.replace(tzinfo=zone)
 
 
-def daily_at(hour: int, minute: int, *, weekdays: frozenset[int] | None = None) -> CronTrigger:
-    """A cron trigger for a time of day, optionally restricted to certain weekdays."""
+def daily_at(
+    hour: int,
+    minute: int,
+    *,
+    weekdays: frozenset[int] | None = None,
+    timezone: str | ZoneInfo | None = None,
+) -> CronTrigger:
+    """A cron trigger for a time of day, optionally restricted to certain weekdays.
+
+    The timezone is explicit on purpose. Left unset, APScheduler falls back to the
+    *host's* local zone, so the same configuration fires at a different hour depending
+    on the machine. Worse, the catch-up sweep evaluates the trigger directly rather than
+    through the scheduler, so its window and the trigger would disagree — and that
+    failure is silent: the sweep finds nothing and replays nothing.
+    """
     names = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
     day_of_week = ",".join(names[weekday] for weekday in sorted(weekdays)) if weekdays else "*"
-    return CronTrigger(hour=hour, minute=minute, day_of_week=day_of_week)
+    zone = ZoneInfo(timezone) if isinstance(timezone, str) else timezone
+    return CronTrigger(hour=hour, minute=minute, day_of_week=day_of_week, timezone=zone)

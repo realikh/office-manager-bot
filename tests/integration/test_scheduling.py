@@ -21,6 +21,11 @@ from tabelshchik.adapters.scheduling.runner import (
 
 MONDAY_1530 = datetime(2026, 9, 14, 15, 30)
 
+#: Pinned deliberately. Left to the host, the trigger adopts one zone while the
+#: catch-up window uses another, and the sweep silently finds nothing — the bug these
+#: tests exist to pin down, and the reason they passed locally and failed in CI.
+ZONE = "Asia/Almaty"
+
 
 class Recorder:
     def __init__(self, explode: bool = False) -> None:
@@ -34,11 +39,18 @@ class Recorder:
 
 
 def runner(sessions, **kwargs) -> JobRunner:
+    kwargs.setdefault("timezone", ZONE)
     return JobRunner(ledger=SqlJobLedger(sessions), **kwargs)
 
 
 def job(handler, *, name="attendance", scope="ovest", hour=15, minute=30, **kwargs) -> Job:
-    return Job(name=name, trigger=daily_at(hour, minute), handler=handler, scope=scope, **kwargs)
+    return Job(
+        name=name,
+        trigger=daily_at(hour, minute, timezone=ZONE),
+        handler=handler,
+        scope=scope,
+        **kwargs,
+    )
 
 
 # ------------------------------------------------------------------ occurrence keys
@@ -186,9 +198,9 @@ async def test_a_failed_job_is_retried_on_the_next_sweep(sessions) -> None:
 def test_a_trigger_can_be_restricted_to_weekdays() -> None:
     from zoneinfo import ZoneInfo
 
-    trigger = daily_at(15, 30, weekdays=frozenset({0, 6}))  # Monday and Sunday
+    trigger = daily_at(15, 30, weekdays=frozenset({0, 6}), timezone=ZONE)  # Mon and Sun
     found = occurrences_between(
-        trigger, datetime(2026, 9, 14), datetime(2026, 9, 22), ZoneInfo("Asia/Almaty")
+        trigger, datetime(2026, 9, 14), datetime(2026, 9, 22), ZoneInfo(ZONE)
     )
 
     assert [moment.date().isoformat() for moment in found] == [
@@ -202,10 +214,10 @@ def test_occurrences_are_returned_as_naive_local_times() -> None:
     from zoneinfo import ZoneInfo
 
     found = occurrences_between(
-        daily_at(15, 30),
+        daily_at(15, 30, timezone=ZONE),
         datetime(2026, 9, 14),
         datetime(2026, 9, 15),
-        ZoneInfo("Asia/Almaty"),
+        ZoneInfo(ZONE),
     )
     assert found[0] == MONDAY_1530
     assert found[0].tzinfo is None
@@ -218,6 +230,63 @@ def test_the_window_is_bounded_whatever_the_grace(grace: int) -> None:
 
     now = datetime(2026, 9, 16, 16, 0)
     found = occurrences_between(
-        daily_at(15, 30), now - timedelta(hours=grace), now, ZoneInfo("Asia/Almaty")
+        daily_at(15, 30, timezone=ZONE), now - timedelta(hours=grace), now, ZoneInfo(ZONE)
     )
     assert all(moment <= now for moment in found)
+
+
+# ------------------------------------------------------------------------ timezones
+
+
+def test_a_trigger_keeps_the_timezone_it_was_given_not_the_hosts() -> None:
+    """The failure this guards against is silent.
+
+    Without an explicit zone APScheduler uses the host's. Scheduled firing still works,
+    because the scheduler applies its own timezone when the job is added — but the
+    catch-up sweep evaluates the trigger directly, so its window and the trigger drift
+    apart and the sweep replays nothing at all. Nothing errors; reminders simply stop
+    being recovered.
+    """
+    from zoneinfo import ZoneInfo
+
+    trigger = daily_at(15, 30, timezone="Asia/Almaty")
+    assert trigger.timezone == ZoneInfo("Asia/Almaty")
+
+
+def test_catch_up_finds_the_occurrence_whatever_the_host_zone_is() -> None:
+    """This is the assertion that would have failed in CI and passed locally."""
+    from zoneinfo import ZoneInfo
+
+    for zone in ("Asia/Almaty", "UTC", "America/New_York", "Pacific/Kiritimati"):
+        found = occurrences_between(
+            daily_at(15, 30, timezone=zone),
+            datetime(2026, 9, 14, 0, 0),
+            datetime(2026, 9, 14, 23, 59),
+            ZoneInfo(zone),
+        )
+        assert found == [MONDAY_1530], f"{zone}: got {found}"
+
+
+def test_every_scheduled_job_pins_its_timezone(sessions, tmp_path) -> None:
+    """Catches a trigger added later without one — the mistake is easy and invisible."""
+    from pathlib import Path
+
+    from tabelshchik.adapters.scheduling.runner import JobRunner
+    from tabelshchik.bootstrap.container import build_services
+    from tabelshchik.bootstrap.jobs import register_jobs
+    from tabelshchik.bootstrap.settings import Secrets
+
+    services = build_services(
+        config_dir=Path("config"), database_path=tmp_path / "t.db", secrets=Secrets()
+    )
+    try:
+        engine = JobRunner(ledger=services.jobs, timezone=services.config.app.timezone)
+        register_jobs(engine, services)
+
+        assert engine.jobs
+        for item in engine.jobs:
+            assert str(item.trigger.timezone) == services.config.app.timezone, (
+                f"{item.name}:{item.scope} follows the host timezone"
+            )
+    finally:
+        services.engine.dispose()
