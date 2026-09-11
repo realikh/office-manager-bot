@@ -120,6 +120,20 @@ with the Telegram prerequisites that fail silently if skipped, and the three che
 prove reliability rather than merely that it starts. General deployment notes and the
 Oracle Always Free caveats are in [docs/deploy.md](docs/deploy.md).
 
+## Documentation
+
+Start at **[CLAUDE.md](CLAUDE.md)** — the orientation for anyone, human or agent, about to
+change something: commands, the layering contracts, the conventions that are load-bearing,
+and the specific ways this repo has bitten people before.
+
+| Document | Read it before |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Touching the solver, the ledger or retention |
+| [docs/ai-voice.md](docs/ai-voice.md) | Touching a prompt, a guard or `config/messages.yaml` |
+| [docs/configuration.md](docs/configuration.md) | Adding a setting or editing an office file |
+| [docs/testing.md](docs/testing.md) | Adding tests — or when one you did not expect breaks |
+| [docs/deploy.md](docs/deploy.md) | Moving it to a different machine |
+
 ## Migrating from office-rotation-bot
 
 ```bash

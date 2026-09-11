@@ -82,10 +82,41 @@ by source and status is built entirely out of those.
 **Per-office jobs, not one job that fans out.** A failure in one office is isolated, the
 occurrence key is unambiguous, and the catch-up sweep can replay exactly what was missed.
 
-**The model is never told a fact it could get wrong.** It emits `{date}` and `{office}`
-tokens that are substituted after escaping, and output naming an employee, containing
-stray braces, shouting or hitting a banned term is discarded in favour of a hand-written
-line. Rejecting is cheap, so the guards are strict.
+**The model is never told a fact, and never emits one.** It writes a flavour clause and
+some epithets; every date, weekday, office name and person is placed by `voice.py` after
+escaping. This started as a guard and became a structure: when the model held a `{date}`
+token whose contents it could not see, it wrote its own lead-in in front of it and
+produced "В понедельник В понедельник, 14 сентября". A filter can only detect that.
+Taking the token out of its hands removes the failure. Generated text that names a
+weekday, a month, a digit, the office or an employee — or shouts, or disagrees in gender —
+is discarded in favour of a written line. Rejecting is cheap, so the guards are strict.
+Details in [ai-voice.md](ai-voice.md).
+
+**The reminder's roster loop never depends on the model.** Decoration is optional; being
+reminded is not. Epithets fall back per slot, so a model that titles one person well and
+fumbles the next costs only the second title, and with the AI switched off entirely
+everyone scheduled still gets a tagged line.
+
+**Removal ends a tenure; it does not delete a person.** The store's `remove_employee`
+defaults to a hard delete that cascades away every assignment somebody ever had and
+silently rewrites everyone else's surplus. An end date stops them being scheduled, keeps
+the history the ledger is rebuilt from, and undoes in one button.
+
+**The office YAML is a seed, not a live source.** Seeding skips an office that already
+exists, at whole-office granularity, so after first boot the database is authoritative and
+the admin UI is the only way to change a roster. The alternative — re-applying the files
+on boot — would delete employees and cascade away their history every time someone edited
+a comment.
+
+**Chat memory is a ring buffer, not a time series.** Writing a new fact is what evicts the
+oldest. A bounded number of rows means a bounded prompt, which means a bill that cannot
+creep; retention by age would let a busy week silently double the cost of every message.
+The raw message cache is the opposite — it exists only to rebuild a reply chain, which
+nobody follows back more than a few days, so that one is pruned by age.
+
+**One model call, not two.** The chat's reply and its decision about what to remember come
+back in a single JSON response; so do the reminder's clause and its epithets. Two calls
+would cost twice as much and could disagree with each other.
 
 ## Things deliberately not built
 
