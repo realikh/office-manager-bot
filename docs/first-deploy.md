@@ -75,6 +75,56 @@ git push -u origin main
 
 ---
 
+## 3.5. Create the VM
+
+Skip if you already have one with a **public IP** and **Ubuntu 24.04**. Two settings are
+easy to get wrong and both mean starting over, so they are called out below.
+
+In the Oracle Cloud console: **☰ → Compute → Instances → Create instance**.
+
+**Name** — anything, e.g. `tabelshchik`.
+
+**Image and shape** → *Edit*:
+
+- **Image** → *Change image* → **Canonical Ubuntu** → **24.04**. The console defaults to
+  Oracle Linux; the commands below assume Ubuntu, so change this deliberately.
+- **Shape** → *Change shape* → **Ampere** → `VM.Standard.A1.Flex` → 1 OCPU, 6 GB.
+  Check it is labelled **Always Free eligible**.
+- If that fails later with **"Out of host capacity"** — common for Ampere — go back and
+  pick **AMD** → `VM.Standard.E2.1.Micro` instead. It is 1/8 OCPU and 1 GB, which is
+  still ample: this bot idles under 200 MB. Try Ampere again another day if you like.
+
+**Networking** — the setting people miss:
+
+- Let it create a new VCN and subnet if you have none.
+- **Subnet** must be a **public subnet**.
+- **Assign a public IPv4 address** must be **Yes**. Without it there is nothing to SSH
+  to, and it cannot be added afterwards if the subnet is private.
+
+**Add SSH keys** → choose **Paste public keys** and paste your own, rather than letting
+Oracle generate one. Then `ssh` finds the key by default and there is no extra file to
+keep track of:
+
+```bash
+cat ~/.ssh/id_ed25519.pub     # if this errors, run: ssh-keygen -t ed25519
+```
+
+**Boot volume** — leave the defaults. 50 GB is well inside the free allowance.
+
+Then **Create**. It is `PROVISIONING` for a minute, then `RUNNING`, and the **Public IP
+address** appears on the instance page.
+
+### Connect
+
+```bash
+ssh ubuntu@<PUBLIC_IP>
+```
+
+If it times out rather than being refused, the VCN security list is missing ingress on
+TCP 22 — default VCNs have it, custom ones may not.
+
+---
+
 ## 4. Prepare the VM
 
 SSH in, then:
