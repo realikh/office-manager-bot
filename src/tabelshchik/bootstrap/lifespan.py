@@ -15,9 +15,11 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
 import httpx
+from aiogram.exceptions import TelegramAPIError
 
 from tabelshchik.adapters.scheduling.runner import JobRunner
 from tabelshchik.adapters.telegram.bot import create_bot, create_dispatcher
+from tabelshchik.adapters.telegram.commands import publish_commands
 from tabelshchik.adapters.telegram.notifier import TelegramNotifier
 from tabelshchik.bootstrap.container import Services
 from tabelshchik.bootstrap.jobs import alerting, register_jobs
@@ -40,6 +42,13 @@ async def run_bot(services: Services) -> None:
     me = await bot.get_me()
     services.bot_username = me.username or ""
     logger.info("running as @%s", services.bot_username)
+
+    # Keeps the slash-command menu in step with the handlers that exist.
+    try:
+        await publish_commands(bot, admin_ids=services.admin_ids)
+    except TelegramAPIError:
+        # Cosmetic: the bot works without a menu, so this must not stop it starting.
+        logger.warning("could not publish the command menu", exc_info=True)
 
     dispatcher = create_dispatcher(services)
 

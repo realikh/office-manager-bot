@@ -140,6 +140,20 @@ would differ.
 | `tabelshchik simulate --weeks 52` | Long-run fairness simulation |
 | `tabelshchik dry-run` | Boot everything, list the jobs, send nothing |
 
+## Telegram commands
+
+Published automatically on startup, scoped by audience — nothing to configure in
+@BotFather.
+
+| Command | Who sees it |
+|---|---|
+| `/start` | Link your account. Everyone, in a private chat |
+| `/menu` | Menu |
+| `/me` | Your upcoming office days |
+| `/vacation` | Manage your own time off |
+| `/help` | Also the only command published in groups |
+| `/admin` | Admins only |
+
 ## Development
 
 ```bash

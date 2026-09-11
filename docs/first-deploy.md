@@ -180,7 +180,9 @@ docker compose exec tabelshchik tabelshchik preview --office ovest
 
 Then in Telegram:
 
-- DM the bot `/start` → it should greet you by name from the roster
+- DM the bot `/start` → it should greet you by name from the roster. The slash-command
+  menu is published automatically at startup, so typing `/` shows what is available —
+  admins see `/admin` there, nobody else does. There is nothing to set in @BotFather.
 - `/me` → your upcoming office days
 - `/admin` → the admin menu
 - **/admin → Офисы → O'Vest → ✉️ Тестовое напоминание** — renders the real reminder and
