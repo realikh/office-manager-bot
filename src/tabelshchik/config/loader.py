@@ -128,8 +128,9 @@ def _check_across_offices(offices: tuple[OfficeSeed, ...]) -> None:
         label="telegram username",
     )
 
-    chats = [(office.chat_id, office.id) for office in offices if office.chat_id is not None]
-    _require_unique(chats, label="chat id", hint="each office needs its own chat")
+    # Chat ids are deliberately NOT required to be unique. Two offices may share one
+    # Telegram group; messages into a shared chat carry an office header so they stay
+    # distinguishable, and `LoadedConfig.shared_chat_ids` reports which chats those are.
 
 
 def _require_unique(pairs: list[tuple[Any, str]], *, label: str, hint: str = "") -> None:

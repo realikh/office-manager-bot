@@ -132,10 +132,30 @@ def test_telegram_usernames_must_be_unique_across_offices(tmp_path: Path) -> Non
         load(setup(tmp_path, office(), second))
 
 
-def test_two_offices_may_not_share_a_chat(tmp_path: Path) -> None:
+def test_two_offices_may_share_a_chat(tmp_path: Path) -> None:
+    """Deliberately allowed: one group for several offices is a real setup. Messages
+    into a shared chat carry an office header so the two stay distinguishable."""
     second = office(id="pine", name="Pine", employees=[{"id": "borya", "name": "Боря"}])
-    with pytest.raises(ConfigError, match="duplicate chat id"):
-        load(setup(tmp_path, office(), second))
+
+    config = load(setup(tmp_path, office(), second))
+
+    assert config.shared_chat_ids == frozenset({-100123})
+
+
+def test_offices_with_their_own_chats_are_not_reported_as_shared(tmp_path: Path) -> None:
+    second = office(
+        id="pine", name="Pine", chatId=-100999, employees=[{"id": "borya", "name": "Боря"}]
+    )
+    assert load(setup(tmp_path, office(), second)).shared_chat_ids == frozenset()
+
+
+def test_an_office_without_a_chat_is_not_shared_with_another(tmp_path: Path) -> None:
+    """Two nulls are not a collision."""
+    first = office(chatId=None)
+    second = office(
+        id="pine", name="Pine", chatId=None, employees=[{"id": "borya", "name": "Боря"}]
+    )
+    assert load(setup(tmp_path, first, second)).shared_chat_ids == frozenset()
 
 
 def test_offices_load_in_a_stable_order(tmp_path: Path) -> None:
