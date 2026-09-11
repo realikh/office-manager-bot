@@ -8,7 +8,7 @@ setting can appear configured and do nothing for months.
 from __future__ import annotations
 
 from datetime import date
-from datetime import time as Time
+from datetime import time as clock_time
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -50,10 +50,10 @@ _DEFAULT_TRIGGERS: list[AiTrigger] = ["mention", "reply", "private"]
 class SilentWindow(Base):
     """A quiet period, which may cross midnight (20:00 -> 08:00)."""
 
-    start: Time = Field(alias="from")
-    end: Time = Field(alias="to")
+    start: clock_time = Field(alias="from")
+    end: clock_time = Field(alias="to")
 
-    def covers(self, moment: Time) -> bool:
+    def covers(self, moment: clock_time) -> bool:
         if self.start <= self.end:
             return self.start <= moment < self.end
         return moment >= self.start or moment < self.end
@@ -90,7 +90,7 @@ class SilentHours(Base):
         specific = getattr(self, names[weekday])
         return specific if specific is not None else self.default
 
-    def is_silent(self, weekday: int, moment: Time) -> bool:
+    def is_silent(self, weekday: int, moment: clock_time) -> bool:
         rule = self.rule_for(weekday)
         if rule is None:
             return False
@@ -101,7 +101,7 @@ class SilentHours(Base):
 
 
 class AttendanceReminder(Base):
-    time: Time
+    time: clock_time
     #: Which weekdays the job runs. Including `sun` is what covers Sunday -> Monday;
     #: Friday -> Monday needs nothing special, it is just the next working day.
     run_on: list[WeekdayName] = Field(default_factory=lambda: list(_DEFAULT_RUN_ON))
@@ -118,7 +118,7 @@ class RemindersSection(Base):
 
 class AutoExtend(Base):
     weekday: WeekdayName = "thu"
-    time: Time = Time(10, 0)
+    time: clock_time = clock_time(10, 0)
 
     @property
     def weekday_number(self) -> int:

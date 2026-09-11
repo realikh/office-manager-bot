@@ -71,6 +71,9 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = false
 disallow_untyped_calls = false
 disallow_any_generics = false
+# Tests assert on values they have just written, so narrowing every Optional would be
+# noise that hides real findings.
+disable_error_code = ["union-attr"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
