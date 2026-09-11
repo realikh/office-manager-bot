@@ -12,10 +12,11 @@ from datetime import timedelta
 from typing import Any
 
 from aiogram import BaseMiddleware, F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message, TelegramObject
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, TelegramObject
 
 from tabelshchik.adapters.reports.xlsx import build_workbook, schedule_caption
 from tabelshchik.adapters.telegram.keyboards import (
@@ -42,6 +43,10 @@ from tabelshchik.domain.entities import SCALE, Employee
 router = Router(name="admin")
 
 
+class SetDesks(StatesGroup):
+    waiting_for_count = State()
+
+
 class AddEmployee(StatesGroup):
     waiting_for_name = State()
     waiting_for_username = State()
@@ -54,6 +59,10 @@ class EditEmployee(StatesGroup):
 
 
 SKIP = "-"
+
+#: Sanity bound on a typed desk count. There is no schema maximum, and a fat-fingered
+#: 1000 would quietly guarantee a shortfall on that weekday forever.
+MAX_DESKS = 99
 
 
 class AdminOnly(BaseMiddleware):
@@ -98,19 +107,11 @@ async def offices(query: CallbackQuery, services: BotContext) -> None:
 
 @router.callback_query(F.data.startswith("adm:office:"))
 async def office(query: CallbackQuery, services: BotContext) -> None:
-    office_id = _tail(query)
-    found = services.offices.get_office(office_id)
-    if found is None:
+    screen = office_screen(services, _tail(query))
+    if screen is None:
         await query.answer("Офис не найден", show_alert=True)
         return
-
-    chat = found.chat_id or "не задан"
-    headcount = len(services.offices.employees(office_id))
-    await _replace(
-        query,
-        f"<b>{html.escape(found.name)}</b>\nЧат: <code>{chat}</code>\nСотрудников: {headcount}",
-        office_menu(office_id),
-    )
+    await _replace(query, *screen)
 
 
 @router.callback_query(F.data.startswith("adm:emp:"))
@@ -119,24 +120,7 @@ async def employees(query: CallbackQuery, services: BotContext) -> None:
 
 
 async def _show_roster(query: CallbackQuery, services: BotContext, office_id: str) -> None:
-    today = services.clock.today()
-    roster = sorted(services.offices.employees(office_id), key=lambda e: e.full_name.casefold())
-
-    entries = []
-    for employee in roster:
-        marks = []
-        if not employee.in_tenure(today):
-            marks.append("уволен")
-        if employee.telegram_user_id is None:
-            marks.append("не привязан")
-        suffix = f" · {', '.join(marks)}" if marks else ""
-        entries.append((employee.id, f"{employee.full_name}{suffix}"))
-
-    await _replace(
-        query,
-        f"<b>Сотрудники</b> — {len(roster)} чел. Нажмите, чтобы открыть карточку.",
-        employee_list(office_id, entries),
-    )
+    await _replace(query, *roster_screen(services, office_id))
 
 
 @router.callback_query(F.data.startswith("adm:empadd:"))
@@ -398,6 +382,7 @@ async def apply_username(message: Message, state: FSMContext, services: BotConte
     await message.answer("✅ Ник обновлён.")
 
 
+@router.message(Command("cancel"), SetDesks.waiting_for_count)
 @router.message(Command("cancel"), AddEmployee.waiting_for_name)
 @router.message(Command("cancel"), AddEmployee.waiting_for_username)
 @router.message(Command("cancel"), AddEmployee.waiting_for_gender)
@@ -429,83 +414,100 @@ def _find(services: BotContext, employee_id: str) -> tuple[str, Employee] | None
 
 @router.callback_query(F.data.startswith("adm:desks:"))
 async def desks(query: CallbackQuery, services: BotContext) -> None:
-    office_id = _tail(query)
-    context = _context(services, office_id)
-    values = {weekday: str(context.template.desks_on(weekday)) for weekday in range(5)}
-    await _replace(
-        query,
-        "Свободных мест по дням. Нажмите, чтобы увеличить (после 9 — обнуляется):",
-        weekday_picker(office_id, "adm:desk", values),
-    )
+    await _replace(query, *desks_screen(services, _tail(query)))
 
 
 @router.callback_query(F.data.startswith("adm:desk:"))
-async def cycle_desks(query: CallbackQuery, services: BotContext) -> None:
+async def start_setting_desks(
+    query: CallbackQuery, state: FSMContext, services: BotContext
+) -> None:
+    """Ask for the number instead of cycling to it.
+
+    This used to increment on each tap and wrap after nine, which is eleven taps to go
+    from 9 to 8 and no way at all to reach a number above nine.
+    """
     _, _, office_id, weekday_raw = str(query.data).split(":")
     weekday = int(weekday_raw)
-    context = _context(services, office_id)
 
-    current = context.template.desks_on(weekday)
-    services.roster.set_vacant_desks(office_id, weekday, 0 if current >= 9 else current + 1)
+    await query.answer()
+    await state.set_state(SetDesks.waiting_for_count)
+    await state.update_data(office_id=office_id, weekday=weekday)
+
+    if isinstance(query.message, Message):
+        current = _context(services, office_id).template.desks_on(weekday)
+        name = services.voice.catalog.common.weekdays[weekday]
+        await query.message.answer(
+            f"Сколько свободных мест в {name}? Сейчас {current}.\n"
+            f"Отправьте число от 0 до {MAX_DESKS}. /cancel — отмена."
+        )
+
+
+@router.message(SetDesks.waiting_for_count)
+async def apply_desks(message: Message, state: FSMContext, services: BotContext) -> None:
+    data = await state.get_data()
+    office_id = str(data.get("office_id", ""))
+    weekday = int(data.get("weekday", 0))
+
+    count = _parse_count(message.text or "")
+    if count is None:
+        # Stays in the state: a mistyped number is worth retyping, not restarting.
+        await message.answer(f"Нужно целое число от 0 до {MAX_DESKS}.")
+        return
+
+    services.roster.set_vacant_desks(office_id, weekday, count)
     services.audit.record(
-        actor_id=query.from_user.id,
+        actor_id=message.from_user.id if message.from_user else None,
         action="template.desks",
-        payload={"office": office_id, "weekday": weekday},
+        payload={"office": office_id, "weekday": weekday, "desks": count},
     )
-    await desks(query, services)
+    await state.clear()
+
+    headcount = sum(
+        1
+        for employee in services.offices.employees(office_id)
+        if employee.in_tenure(services.clock.today())
+    )
+    name = services.voice.catalog.common.weekdays[weekday]
+    reply = f"✅ {name.capitalize()}: свободных мест {count}."
+    if count > headcount:
+        # Not refused — an office may be planning to hire — but a silent permanent
+        # shortfall is worth one sentence.
+        reply += f"\nВ офисе всего {headcount} чел., так что места останутся пустыми."
+
+    text, markup = desks_screen(services, office_id)
+    await message.answer(f"{reply}\n\n{text}", reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("adm:fix:"))
 async def fixed(query: CallbackQuery, services: BotContext) -> None:
-    office_id = _tail(query)
-    context = _context(services, office_id)
-    values = {weekday: str(len(context.template.fixed_on(weekday))) or "0" for weekday in range(5)}
-    await _replace(
-        query,
-        "Фиксированное расписание — сколько человек закреплено за днём:",
-        weekday_picker(office_id, "adm:fixday", values),
-    )
+    await _replace(query, *fixed_screen(services, _tail(query)))
 
 
 @router.callback_query(F.data.startswith("adm:fixday:"))
 async def fixed_day(query: CallbackQuery, services: BotContext) -> None:
     _, _, office_id, weekday_raw = str(query.data).split(":")
-    weekday = int(weekday_raw)
-    context = _context(services, office_id)
-    assigned = set(context.template.fixed_on(weekday))
-
-    rows = [
-        (
-            _button(
-                f"{'✅' if employee.id in assigned else '▫️'} {employee.full_name}",
-                f"adm:fixtog:{office_id}:{weekday}:{employee.id}",
-            ),
-        )
-        for employee in services.offices.employees(office_id)
-        if employee.in_tenure(services.clock.today())
-    ]
-    await _replace(
-        query,
-        f"Кто всегда в офисе в {WEEKDAY_LABELS[weekday]}:",
-        keyboard(*rows, (_button("‹ Назад", f"adm:fix:{office_id}"),)),
-    )
+    await _replace(query, *fixed_day_screen(services, office_id, int(weekday_raw)))
 
 
 @router.callback_query(F.data.startswith("adm:fixtog:"))
 async def toggle_fixed(query: CallbackQuery, services: BotContext) -> None:
     _, _, office_id, weekday_raw, employee_id = str(query.data).split(":", 4)
-    now_fixed = services.roster.toggle_fixed(office_id, int(weekday_raw), employee_id)
+    weekday = int(weekday_raw)
+
+    now_fixed = services.roster.toggle_fixed(office_id, weekday, employee_id)
     services.audit.record(
         actor_id=query.from_user.id,
         action="template.fixed",
         payload={
             "office": office_id,
-            "weekday": weekday_raw,
+            "weekday": weekday,
             "employee": employee_id,
             "fixed": now_fixed,
         },
     )
-    await fixed_day(query, services)
+    # Redrawn from the values just parsed, never by calling the sibling handler: that
+    # handler would re-parse `query.data`, which now names a *toggle* and not a day.
+    await _replace(query, *fixed_day_screen(services, office_id, weekday))
 
 
 @router.callback_query(F.data.startswith("adm:regen:"))
@@ -541,9 +543,18 @@ async def regenerate_office(query: CallbackQuery, services: BotContext) -> None:
 @router.callback_query(F.data.startswith("adm:reseed:"))
 async def reseed(query: CallbackQuery, services: BotContext) -> None:
     office_id = _tail(query)
-    services.roster.bump_seed(office_id)
-    await query.answer("Перемешано — теперь перегенерируйте.")
-    await office(query, services)
+    seed = services.roster.bump_seed(office_id)
+    services.audit.record(
+        actor_id=query.from_user.id,
+        action="template.reseed",
+        payload={"office": office_id, "seed": seed},
+    )
+
+    screen = office_screen(services, office_id)
+    if screen is None:
+        await query.answer("Офис не найден", show_alert=True)
+        return
+    await _replace(query, *screen)
 
 
 @router.callback_query(F.data.startswith("adm:preview:"))
@@ -755,6 +766,110 @@ async def _send_workbook(
     )
 
 
+# ---------------------------------------------------------------------------- screens
+#
+# Each returns the text and keyboard for one screen from *explicit* arguments. Handlers
+# parse `query.data` and call these; handlers never call each other.
+#
+# That rule exists because they used to. Pressing a `adm:fixtog:…` button ran the toggle
+# and then called `fixed_day`, which re-parsed `query.data` — by then five segments, not
+# four — and raised. The write had already succeeded, so the checkbox was right the next
+# time the screen was opened and never on the tap itself. `cycle_desks` had the same
+# shape and looked up an office named "0". A screen built from arguments cannot do this.
+
+
+def office_screen(services: BotContext, office_id: str) -> tuple[str, InlineKeyboardMarkup] | None:
+    """None when there is no such office, so the caller can say so."""
+    found = services.offices.get_office(office_id)
+    if found is None:
+        return None
+
+    today = services.clock.today()
+    roster = services.offices.employees(office_id)
+    active = sum(1 for employee in roster if employee.in_tenure(today))
+    chat = found.chat_id or "не задан"
+
+    return (
+        f"<b>{html.escape(found.name)}</b>\n"
+        f"Чат: <code>{chat}</code>\n"
+        f"Сотрудников: {active}"
+        + (f" (+{len(roster) - active} уволенных)" if len(roster) > active else "")
+        + f"\nПеремешивание: <code>{found.seed_nonce}</code>",
+        office_menu(office_id),
+    )
+
+
+def desks_screen(services: BotContext, office_id: str) -> tuple[str, InlineKeyboardMarkup]:
+    context = _context(services, office_id)
+    values = {weekday: str(context.template.desks_on(weekday)) for weekday in range(5)}
+    return (
+        "Свободных мест по дням. Нажмите на день, чтобы задать число:",
+        weekday_picker(office_id, "adm:desk", values),
+    )
+
+
+def fixed_screen(services: BotContext, office_id: str) -> tuple[str, InlineKeyboardMarkup]:
+    context = _context(services, office_id)
+    values = {weekday: str(len(context.template.fixed_on(weekday))) for weekday in range(5)}
+    return (
+        "Фиксированное расписание — сколько человек закреплено за днём:",
+        weekday_picker(office_id, "adm:fixday", values),
+    )
+
+
+def fixed_day_screen(
+    services: BotContext, office_id: str, weekday: int
+) -> tuple[str, InlineKeyboardMarkup]:
+    context = _context(services, office_id)
+    assigned = set(context.template.fixed_on(weekday))
+    today = services.clock.today()
+
+    rows = [
+        (
+            _button(
+                f"{'✅' if employee.id in assigned else '▫️'} {employee.full_name}",
+                f"adm:fixtog:{office_id}:{weekday}:{employee.id}",
+            ),
+        )
+        for employee in sorted(
+            services.offices.employees(office_id), key=lambda e: e.full_name.casefold()
+        )
+        if employee.in_tenure(today)
+    ]
+    return (
+        f"Кто всегда в офисе в {WEEKDAY_LABELS[weekday]}: отмечено {len(assigned)}.",
+        keyboard(*rows, (_button("‹ Назад", f"adm:fix:{office_id}"),)),
+    )
+
+
+def roster_screen(services: BotContext, office_id: str) -> tuple[str, InlineKeyboardMarkup]:
+    today = services.clock.today()
+    roster = sorted(services.offices.employees(office_id), key=lambda e: e.full_name.casefold())
+
+    entries = []
+    for employee in roster:
+        marks = []
+        if not employee.in_tenure(today):
+            marks.append("уволен")
+        if employee.telegram_user_id is None:
+            marks.append("не привязан")
+        suffix = f" · {', '.join(marks)}" if marks else ""
+        entries.append((employee.id, f"{employee.full_name}{suffix}"))
+
+    return (
+        f"<b>Сотрудники</b> — {len(roster)} чел. Нажмите, чтобы открыть карточку.",
+        employee_list(office_id, entries),
+    )
+
+
+def _parse_count(raw: str) -> int | None:
+    text = raw.strip()
+    if not text.isdecimal():
+        return None
+    value = int(text)
+    return value if 0 <= value <= MAX_DESKS else None
+
+
 def _context(services: BotContext, office_id: str):  # type: ignore[no-untyped-def]
     today = services.clock.today()
     return services.offices.planning_context(office_id, start=today, end=today)
@@ -775,9 +890,20 @@ def _back_button(office_id: str):  # type: ignore[no-untyped-def]
 
 
 async def _replace(query: CallbackQuery, text: str, markup: Any) -> None:
+    """Redraw the screen in place.
+
+    Narrow on purpose. A bare `except Exception` here turned a crash in the screen being
+    drawn into a second, stale message — which looked like the UI simply not responding.
+    """
     await query.answer()
-    if isinstance(query.message, Message):
-        try:
-            await query.message.edit_text(text, reply_markup=markup)
-        except Exception:
-            await query.message.answer(text, reply_markup=markup)
+    if not isinstance(query.message, Message):
+        return
+    try:
+        await query.message.edit_text(text, reply_markup=markup)
+    except TelegramBadRequest as error:
+        if "message is not modified" in str(error):
+            # Pressing a button that changes nothing is not a failure; Telegram just
+            # declines to redraw an identical message.
+            return
+        # Too old to edit, or deleted. A fresh message beats silence.
+        await query.message.answer(text, reply_markup=markup)

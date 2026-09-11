@@ -131,6 +131,27 @@ s = s.replace(old, new, 1)
 When applying several edits in one script, label each one and print on success, so a
 failure names which pattern went stale. Re-read a file after any `ruff format`.
 
+### A handler must never redraw by calling another handler
+
+Callback handlers parse `query.data`. A handler that redraws by calling a sibling makes
+the sibling parse callback data meant for the *first* one, and it fails — silently,
+because the write it follows has already landed. The visible symptom is a UI that does
+not respond: the checkbox is right the next time you open the screen and never on the tap.
+
+Build screens from **explicit arguments** instead. In `routers/admin.py` those are
+`office_screen`, `desks_screen`, `fixed_screen`, `fixed_day_screen`, `roster_screen` —
+each returns `(text, markup)` from its own parameters, and handlers do
+`await _replace(query, *some_screen(services, office_id))`.
+`tests/integration/test_admin_screens.py::test_no_handler_redraws_by_calling_another_handler`
+enforces it; it caught a third instance that had been working only because two callbacks
+happened to carry the office id in the same position.
+
+Related: **`editMessageText` refuses an unchanged message.** A screen whose only
+difference is a ✅ needs something in the *text* to move too — hence the "отмечено N"
+counter. And do not wrap the edit in a bare `except Exception`: that turns a crash in the
+screen being drawn into a second, stale message, which is indistinguishable from the UI
+not responding.
+
 ### Scheduling: pass the timezone explicitly
 
 `daily_at()` in `adapters/scheduling/runner.py` takes an explicit `timezone` and every job
