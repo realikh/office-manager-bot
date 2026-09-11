@@ -372,7 +372,11 @@ def mention(
 
 
 def render_days(
-    days: Sequence[tuple[date, Sequence[str]]], common: CommonText, *, limit: int = 4000
+    days: Sequence[tuple[date, Sequence[str]]],
+    common: CommonText,
+    *,
+    limit: int = 4000,
+    markup: bool = True,
 ) -> list[str]:
     """One heading per day, one person per row.
 
@@ -380,11 +384,16 @@ def render_days(
     unreadable is the same as unread. Returns a list because a long horizon can exceed
     Telegram's 4096-character message limit, and a message that is one character over is
     simply not delivered.
+
+    ``markup=False`` is for a terminal, where bold tags and HTML entities are noise
+    rather than formatting.
     """
+    template = "<b>{heading}</b>\n{names}" if markup else "{heading}\n{names}"
+    escape = html.escape if markup else str
     blocks = [
-        "<b>{heading}</b>\n{names}".format(
-            heading=html.escape(format_long_date(day, common)),
-            names="\n".join(html.escape(name) for name in names),
+        template.format(
+            heading=escape(format_long_date(day, common)),
+            names="\n".join(escape(name) for name in names),
         )
         for day, names in days
         if names

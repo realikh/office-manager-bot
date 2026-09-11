@@ -202,7 +202,48 @@ def test_an_empty_period_still_produces_a_workbook() -> None:
     assert len(build_workbook(report(days=[], employees=[]), COMMON)) > 0
 
 
+def week(**kwargs) -> str:
+    return upcoming_week(report(**kwargs), COMMON, start=START)
+
+
 def test_the_upcoming_week_preview_skips_empty_days() -> None:
-    preview = upcoming_week(report(days=days((0, ("e0",)), (1, ()))), COMMON)
-    assert preview.count("\n") == 0
-    assert "пн 14.09" in preview
+    preview = week(days=days((0, ("e0",)), (1, ())))
+    assert "Понедельник, 14 сентября 2026 года" in preview
+    assert "Вторник" not in preview
+
+
+def test_the_preview_lists_one_person_per_row() -> None:
+    preview = week(days=days((0, ("e0", "e1"))))
+    assert preview.split("\n")[1:] == ["Сотрудник 0", "Сотрудник 1"]
+
+
+def test_the_preview_is_windowed_by_date_not_by_scheduled_day_count() -> None:
+    """The bug this replaced.
+
+    An office that fills desks only on Fridays has seven *scheduled* days six weeks out,
+    so taking the first seven listed a month and a half of identical rosters — which then
+    overran Telegram's caption limit and was cut off mid-name.
+    """
+    fridays = days(*((offset, ("e0",)) for offset in (4, 11, 18, 25, 32, 39, 46)))
+    preview = week(days=fridays)
+
+    # Only the Friday inside the seven-day window; the next five are not caption material.
+    assert preview.count("Сотрудник 0") == 1
+    assert "18 сентября" in preview
+    assert "25 сентября" not in preview
+
+
+def test_a_week_too_long_for_a_caption_says_so_instead_of_being_cut() -> None:
+    """A blunt slice cuts mid-name, and now that the summary carries markup it could cut
+    mid-tag and break the whole caption."""
+    crowd = [Employee(id=f"p{i}", full_name=f"Сотрудник Номер {i:02d}") for i in range(40)]
+    everyone = tuple(person.id for person in crowd)
+    packed = report(employees=crowd, days=days(*((offset, everyone) for offset in range(5))))
+    preview = upcoming_week(packed, COMMON, start=START)
+
+    assert len(preview) <= 900
+    assert "Полное расписание — в файле." in preview
+
+
+def test_a_week_with_nobody_in_it_renders_nothing_at_all() -> None:
+    assert week(days=days((0, ()))) == ""

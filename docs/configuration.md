@@ -44,8 +44,8 @@ Every model inherits `config/models.py:Base`:
 
 ```python
 model_config = ConfigDict(
-    extra="forbid",              # a typo is a startup error, not a silent default
-    alias_generator=to_camel,    # YAML is camelCase, Python is snake_case
+    extra="forbid",  # a typo is a startup error, not a silent default
+    alias_generator=to_camel,  # YAML is camelCase, Python is snake_case
     populate_by_name=True,
     frozen=True,
 )

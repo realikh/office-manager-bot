@@ -9,15 +9,15 @@ from __future__ import annotations
 
 import html
 import logging
+from datetime import timedelta
 
-from tabelshchik.adapters.reports.xlsx import build_workbook, upcoming_week
+from tabelshchik.adapters.reports.xlsx import build_workbook, schedule_caption
 from tabelshchik.adapters.scheduling.runner import Job, JobContext, JobRunner, daily_at
 from tabelshchik.application.build_report import ReportDay, build_report
 from tabelshchik.application.prune_history import prune_history
 from tabelshchik.application.regenerate_schedule import Regeneration, regenerate
 from tabelshchik.application.send_attendance_reminder import send_attendance_reminder
 from tabelshchik.application.send_tempo_reminder import send_tempo_reminder
-from tabelshchik.application.voice import format_date
 from tabelshchik.bootstrap.container import Services
 
 logger = logging.getLogger(__name__)
@@ -222,24 +222,20 @@ async def publish_workbook(services: Services, office_id: str, result: Regenerat
         seed=result.instance.seed,
     )
 
-    common = services.voice.catalog.common
-    summary = upcoming_week(report, common)
-    if result.shortfall:
-        summary += "\n" + services.voice.catalog.text("schedule.shortfallNote").format(
-            shortfall=result.shortfall
-        )
-
-    caption = services.voice.catalog.text("schedule.caption").format(
-        office=html.escape(office.name),
-        start=format_date(result.horizon_start, common),
-        end=format_date(result.horizon_end, common),
-        summary=html.escape(summary),
+    caption = schedule_caption(
+        services.voice.catalog,
+        report,
+        office_name=office.name,
+        horizon_start=result.horizon_start,
+        horizon_end=result.horizon_end,
+        week_from=services.clock.today() + timedelta(days=1),
+        shortfall=result.shortfall,
     )
     await services.notifier.send_document(
         office.chat_id,
         f"{office_id}-{result.horizon_start.isoformat()}.xlsx",
-        build_workbook(report, common),
-        caption=caption[:1024],
+        build_workbook(report, services.voice.catalog.common),
+        caption=caption,
         silent=services.silent_policy.is_silent(
             services.clock.today().weekday(), services.clock.time_of_day()
         ),

@@ -304,10 +304,14 @@ ai:
   disabled: "Сейчас я не отвечаю на сообщения."
 
 schedule:
+  # {summary} is the coming week, already rendered and already HTML-safe — do not escape
+  # it again at the call site. The caption has to fit Telegram's 1024 characters, so keep
+  # the header here short; `schedule_caption` drops the week rather than cutting it.
   caption: |-
-    📅 Расписание офиса «{office}» обновлено.
-    Период: {start} — {end}.
+    📅 <b>Расписание офиса «{office}» обновлено</b>
+    Период: {start} — {end}
+
     {summary}
   noChanges: "Расписание офиса «{office}» пересчитано — изменений нет."
   shortfallNote: "⚠️ Не удалось заполнить мест: {shortfall}. Не хватает свободных людей."
-  weekHeader: "Ближайшая неделя:"
+  weekHeader: "<b>Ближайшие 7 дней</b>"

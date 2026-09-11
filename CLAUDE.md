@@ -124,7 +124,7 @@ string unchanged — no error, no diff, and you find out much later.
 **Always assert before writing:**
 
 ```python
-assert old in s, "pattern not found"       # or sys.exit with a label
+assert old in s, "pattern not found"  # or sys.exit with a label
 s = s.replace(old, new, 1)
 ```
 
@@ -172,7 +172,9 @@ Flipping that flag would hard-delete employees and cascade away their history.
   can not. Derive the office from the employee instead of carrying both.
 - **Message: 4096 characters.** An over-long message is simply not delivered. Use
   `voice.render_days`, which chunks.
-- **Document caption: 1024 characters.**
+- **Document caption: 1024 characters.** Build one with
+  `reports/xlsx.schedule_caption`, which composes to fit. Never slice a caption: it cuts
+  mid-name, and now that captions carry markup it can cut mid-tag and break the message.
 - **`reply_to_message` is populated exactly one level deep.** Deeper threads are
   reconstructed from the `chat_message` cache — see [docs/ai-voice.md](docs/ai-voice.md).
 - **Privacy mode** (on by default) means the bot only receives messages mentioning it or

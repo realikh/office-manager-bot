@@ -17,7 +17,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
-from tabelshchik.adapters.reports.xlsx import build_workbook, upcoming_week
+from tabelshchik.adapters.reports.xlsx import build_workbook, schedule_caption
 from tabelshchik.adapters.telegram.keyboards import (
     WEEKDAY_LABELS,
     confirm,
@@ -736,18 +736,22 @@ async def _send_workbook(
         seed=result.instance.seed,
     )
 
-    common = services.voice.catalog.common
-    caption = services.voice.catalog.text("schedule.caption").format(
-        office=context.office.name,
-        start=format_date(result.horizon_start, common),
-        end=format_date(result.horizon_end, common),
-        summary=upcoming_week(report, common),
+    caption = schedule_caption(
+        services.voice.catalog,
+        report,
+        office_name=context.office.name,
+        horizon_start=result.horizon_start,
+        horizon_end=result.horizon_end,
+        # Tomorrow and the six days after it. The horizon runs six weeks; nobody reads a
+        # caption that long, and the workbook has the rest.
+        week_from=services.clock.today() + timedelta(days=1),
+        shortfall=result.shortfall,
     )
     await services.notifier.send_document(
         message.chat.id,
         f"{office_id}-{result.horizon_start.isoformat()}.xlsx",
-        build_workbook(report, common),
-        caption=caption[:1024],
+        build_workbook(report, services.voice.catalog.common),
+        caption=caption,
     )
 
 

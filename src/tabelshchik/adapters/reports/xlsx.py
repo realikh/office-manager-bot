@@ -8,9 +8,10 @@ that number would be worse than no workbook.
 
 from __future__ import annotations
 
+import html
 import io
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 import xlsxwriter
@@ -19,7 +20,7 @@ from tabelshchik.application.build_report import (
     ScheduleReport,
     surplus_days,
 )
-from tabelshchik.application.voice import CommonText, format_date
+from tabelshchik.application.voice import Catalog, CommonText, format_date, render_days
 
 #: Print-safe pastels, light enough to read black text on. A person keeps their colour
 #: across regenerations because the index comes from a stable roster ordering.
@@ -297,18 +298,95 @@ def _as_datetime(value: date) -> datetime:
     return datetime(value.year, value.month, value.day)
 
 
-def upcoming_week(report: ScheduleReport, common: CommonText, limit: int = 7) -> str:
-    """A short plain-text preview for the message the workbook is attached to."""
-    lines: list[str] = []
+#: What is left once the caption's own header has taken its share of Telegram's 1024.
+CAPTION_BUDGET = 780
+
+#: Shown instead of a half-listed week. The workbook is attached either way.
+TRUNCATED = "Полное расписание — в файле."
+
+
+def upcoming_week(
+    report: ScheduleReport,
+    common: CommonText,
+    *,
+    start: date,
+    span_days: int = 7,
+    limit: int = CAPTION_BUDGET,
+    markup: bool = True,
+) -> str:
+    """The coming week, for the message the workbook is attached to.
+
+    Windowed by **date**, not by how many scheduled days happen to come next. That
+    distinction is the whole point: an office that fills desks only on Fridays has seven
+    scheduled days six *weeks* out, so taking the first seven listed a month and a half of
+    identical rosters — which then overran Telegram's 1024-character caption limit and was
+    cut off mid-name.
+
+    Rendered the same way as the admin preview, because there is no reason for the same
+    information to look different in two places.
+    """
     names = {employee.id: employee.name for employee in report.employees}
+    end = start + timedelta(days=span_days - 1)
 
-    for day in report.days[:limit]:
-        if not day.attendees:
-            continue
-        who = ", ".join(names.get(employee_id, employee_id) for employee_id in day.attendees)
-        lines.append(f"{common.weekdays_short[day.weekday]} {day.day.strftime('%d.%m')}: {who}")
+    listed = [
+        (
+            day.day,
+            sorted((names.get(who, who) for who in day.attendees), key=str.casefold),
+        )
+        for day in report.days
+        if day.attendees and start <= day.day <= end
+    ]
+    if not listed:
+        return ""
 
-    return "\n".join(lines)
+    chunks = render_days(listed, common, limit=limit, markup=markup)
+    # More than one chunk means the week does not fit. Dropping whole days silently is how
+    # the old version lost people; say so instead, since the file has all of it anyway.
+    return chunks[0] if len(chunks) == 1 else f"{chunks[0]}\n\n{TRUNCATED}"
+
+
+#: Telegram's hard cap on a document caption.
+CAPTION_LIMIT = 1024
+
+
+def schedule_caption(
+    catalog: Catalog,
+    report: ScheduleReport,
+    *,
+    office_name: str,
+    horizon_start: date,
+    horizon_end: date,
+    week_from: date,
+    shortfall: int = 0,
+) -> str:
+    """The caption for a published workbook, composed to fit rather than truncated.
+
+    A blunt slice at 1024 characters cuts mid-name, which is how this message used to end
+    "…Batyrkhan Tok" — and now that the summary carries markup it could cut mid-tag and
+    break the formatting of the whole caption. So the week is either included whole or
+    replaced by a line saying to open the file.
+    """
+    common = catalog.common
+    week = upcoming_week(report, common, start=week_from)
+
+    def compose(summary: str) -> str:
+        return catalog.text("schedule.caption").format(
+            office=html.escape(office_name),
+            start=format_date(horizon_start, common),
+            end=format_date(horizon_end, common),
+            summary=summary,
+        )
+
+    note = catalog.text("schedule.shortfallNote").format(shortfall=shortfall) if shortfall else ""
+    header = catalog.text("schedule.weekHeader")
+
+    parts = [part for part in (f"{header}\n\n{week}" if week else "", note) if part]
+    caption = compose("\n\n".join(parts))
+    if len(caption) <= CAPTION_LIMIT:
+        return caption
+
+    shortened = [part for part in (f"{header}\n\n{TRUNCATED}" if week else "", note) if part]
+    return compose("\n\n".join(shortened))[:CAPTION_LIMIT]
 
 
 def sheet_names(_: Sequence[str] = ()) -> tuple[str, ...]:

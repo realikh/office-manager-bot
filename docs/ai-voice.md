@@ -235,6 +235,20 @@ term → an escaped ellipsis.
 - `ai_usage.tokens` records the API's own count and appears on the admin status screen.
   It read zero for months because the client discarded `response.json()["usage"]`.
 
+## The workbook caption
+
+`schedule.caption` carries `{summary}`, which is **already rendered and already
+HTML-safe** — escaping it again at the call site shows literal `&lt;b&gt;`.
+
+The summary is the coming week only: tomorrow and the six days after it, windowed by
+**date**. It used to take the first seven *scheduled* days, which for an office that
+fills desks only on Fridays meant six weeks of identical rosters, comfortably past
+Telegram's 1024-character caption limit, and the message arrived cut off mid-name.
+
+`reports/xlsx.schedule_caption` composes the caption to fit rather than truncating it.
+If the week will not fit, days that do are kept and a line says the rest is in the
+attached file. Never slice a caption to length.
+
 ## `config/messages.yaml`
 
 Schema in `config/messages.py`, flattened to dotted catalog keys in

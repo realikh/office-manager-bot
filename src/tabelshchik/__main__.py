@@ -11,6 +11,7 @@ import argparse
 import asyncio
 import sys
 import time
+from datetime import timedelta
 from pathlib import Path
 
 from tabelshchik.adapters.fakes import RecordingNotifier
@@ -327,7 +328,16 @@ def _write_workbook(services: Services, office_id: str, result: object, out: Pat
     destination.write_bytes(build_workbook(report, services.voice.catalog.common))
 
     common = services.voice.catalog.common
-    print(upcoming_week(report, common))
+    # Plain text: bold tags and HTML entities are noise in a terminal.
+    print(
+        upcoming_week(
+            report,
+            common,
+            start=services.clock.today() + timedelta(days=1),
+            limit=10_000,
+            markup=False,
+        )
+    )
     print(
         f"\nspread {report.stats.spread}, "
         f"filled {report.stats.desks_filled}/{report.stats.desks_offered}"
