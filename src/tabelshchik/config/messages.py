@@ -94,6 +94,7 @@ class CommonMessages(Base):
     months: list[str] = Field(min_length=12, max_length=12)
     tomorrow: str
     on_weekday: str
+    office_header: str = "🏢 <b>{office}</b>"
 
 
 class MessagesConfig(Base):

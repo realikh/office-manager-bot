@@ -59,6 +59,7 @@ def catalog(messages: MessagesConfig) -> Catalog:
         months=tuple(messages.common.months),
         tomorrow=messages.common.tomorrow,
         on_weekday=messages.common.on_weekday,
+        office_header=messages.common.office_header,
     )
 
     variants = {

@@ -32,6 +32,8 @@ common:
     - декабря
   tomorrow: "Завтра"
   onWeekday: "В {weekday}"
+  # Prefixed to messages only when two offices share one Telegram chat.
+  officeHeader: "🏢 <b>{office}</b>"
 
 attendance:
   intro:

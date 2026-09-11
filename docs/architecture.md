@@ -54,6 +54,13 @@ ledger — and exact rebuildability is what makes the retention prune safe.
 **Retention folds before it deletes.** The checkpoint is one row per employee, bounded by
 headcount rather than time, and never pruned.
 
+**The schema is migrated on boot, not created.** `upgrade_schema` runs Alembic to head
+every start: on a fresh database that creates everything, on an existing one it applies
+whatever is outstanding, and it is a no-op when there is nothing to do. `create_all`
+survives for tests and in-memory databases only. CI runs `alembic check`, which fails if
+a model was edited without a migration — otherwise that only shows up as a crash against
+a real database.
+
 **Synchronous database access.** A local SQLite file serving a few dozen people: queries
 are sub-millisecond, and an async driver would buy latency nobody can perceive in exchange
 for a dependency and a class of bugs. Slow work goes to `asyncio.to_thread` at the call

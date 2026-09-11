@@ -15,10 +15,10 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from tabelshchik.adapters.clock import SystemClock
 from tabelshchik.adapters.db.engine import (
-    create_all,
     create_db_engine,
     create_session_factory,
     session_scope,
+    upgrade_schema,
 )
 from tabelshchik.adapters.db.repositories import (
     SqlAbsenceStore,
@@ -171,7 +171,7 @@ def build_services(
     messages = parse_file(config_dir / "messages.yaml", MessagesConfig)
 
     engine = create_db_engine(database_path)
-    create_all(engine)
+    upgrade_schema(engine)
     sessions = create_session_factory(engine)
 
     # Seeds are a bootstrap, not a live source: an office that already exists in the

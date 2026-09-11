@@ -375,3 +375,47 @@ async def test_every_mood_produces_a_sendable_message(office) -> None:
             silent_policy=SILENT,
             dry_run=True,
         )
+
+
+# ------------------------------------------------------------------- shared chats
+
+
+async def test_two_offices_in_one_chat_each_name_themselves(sessions) -> None:
+    """Allowed on purpose, but the whole point of per-office chats was that people stop
+    reading each other's reminders — so a shared chat has to say which office it means.
+    """
+    from .conftest import office_seed
+
+    seed(
+        sessions,
+        office_seed(schedule={"vacantDesks": {"tuesday": 2}}),
+        office_seed(
+            id="pine",
+            name="Pine Office Park",
+            chatId=-100123,  # the same chat
+            employees=[{"id": "petya", "name": "Петя"}, {"id": "katya", "name": "Катя"}],
+            schedule={"vacantDesks": {"tuesday": 1}},
+        ),
+    )
+    for office_id in ("ovest", "pine"):
+        regenerate(
+            office_id=office_id,
+            offices=SqlOfficeStore(sessions),
+            schedule=SqlScheduleStore(sessions),
+            ledger=SqlLedgerStore(sessions),
+            clock=at(MONDAY, hour=8),
+            policy=SchedulePolicy(horizon_weeks=2, freeze_weeks=0),
+        )
+
+    notifier = RecordingNotifier()
+    await remind(sessions, at(MONDAY), notifier)
+
+    assert "O&#x27;Vest" in notifier.last_text
+    assert notifier.last_text.startswith("🏢")
+
+
+async def test_an_office_with_its_own_chat_gets_no_header(office) -> None:
+    """The header is only useful where it disambiguates; everywhere else it is clutter."""
+    notifier = RecordingNotifier()
+    await remind(office, at(MONDAY), notifier)
+    assert not notifier.last_text.startswith("🏢")

@@ -24,5 +24,9 @@ jobs:
         run: uv run lint-imports
       - name: Config
         run: uv run tabelshchik validate
+      - name: Migrations match the models
+        # Catches a model edited without a migration, which would otherwise only show up
+        # as a crash against a real database.
+        run: uv run alembic check
       - name: Tests
         run: uv run pytest -q

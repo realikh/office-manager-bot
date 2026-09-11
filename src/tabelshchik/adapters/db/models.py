@@ -62,7 +62,9 @@ class Office(Base):
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
     name: Mapped[str] = mapped_column(String(128))
     address: Mapped[str] = mapped_column(String(256), default="")
-    chat_id: Mapped[int | None] = mapped_column(Integer, unique=True, default=None)
+    # Not unique: two offices may deliberately share one chat, in which case their
+    # messages carry an office header so they stay distinguishable.
+    chat_id: Mapped[int | None] = mapped_column(Integer, default=None)
     timezone: Mapped[str] = mapped_column(String(64), default="Asia/Almaty")
     holiday_calendar: Mapped[str] = mapped_column(String(8), default="KZ")
     #: Bumped by an admin to reshuffle a week without changing anything else.

@@ -43,6 +43,8 @@ class CommonText:
     months: tuple[str, ...]
     tomorrow: str
     on_weekday: str
+    #: Prefixed to messages when two offices share one chat.
+    office_header: str = "🏢 <b>{office}</b>"
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +85,11 @@ class MoodPolicy:
         if not self.enabled or self.safe_mode:
             return SAFE_MOOD
         return pick_mood(self.weights, office_id=office_id, day=day, nonce=nonce)
+
+
+def office_header(office_name: str, common: CommonText) -> str:
+    """A header naming the office, for chats that carry more than one."""
+    return common.office_header.replace("{office}", html.escape(office_name))
 
 
 def format_date(day: date, common: CommonText) -> str:

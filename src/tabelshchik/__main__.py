@@ -111,6 +111,11 @@ def _validate(args: argparse.Namespace) -> int:
         )
         if office.chat_id is None:
             print("    warning: no chatId, so this office cannot be messaged")
+
+    for chat in sorted(loaded.shared_chat_ids):
+        sharing = [o.id for o in loaded.offices if o.chat_id == chat]
+        print(f"  note: chat {chat} is shared by {', '.join(sharing)}")
+        print("    messages will be prefixed with the office name")
     return 0
 
 

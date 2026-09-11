@@ -13,7 +13,7 @@ from enum import StrEnum
 
 from tabelshchik.application.policy import SilentPolicy, TempoPolicy
 from tabelshchik.application.ports import Clock, Notifier, OfficeStore
-from tabelshchik.application.voice import Voice, mention
+from tabelshchik.application.voice import Voice, mention, office_header
 from tabelshchik.domain.calendar import CalendarSpec, last_working_day_of_month
 
 
@@ -31,6 +31,13 @@ class TempoOutcome:
     sent: bool = False
     silent: bool = False
     skipped: str | None = None
+
+
+def _chat_is_shared(offices: OfficeStore, chat_id: int | None) -> bool:
+    """Whether more than one office posts into this chat."""
+    if chat_id is None:
+        return False
+    return sum(1 for o in offices.active_offices() if o.chat_id == chat_id) > 1
 
 
 def due_kind(spec: CalendarSpec, today: date, policy: TempoPolicy) -> TempoKind | None:
@@ -123,6 +130,9 @@ async def send_tempo_reminder(
         for employee in roster
     )
     text = f"{intro}{link}\n\n{mentions}"
+    if _chat_is_shared(offices, context.office.chat_id):
+        header = office_header(context.office.name, voice.catalog.common)
+        text = f"{header}\n\n{text}"
 
     silent = silent_policy.is_silent(today.weekday(), clock.time_of_day())
     if dry_run:

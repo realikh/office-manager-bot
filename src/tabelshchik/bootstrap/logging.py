@@ -28,6 +28,8 @@ def configure_logging(level: str = "INFO", *, json_output: bool = False) -> None
     logging.getLogger("aiogram.event").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("apscheduler.executors").setLevel(logging.WARNING)
+    # Alembic announces every plugin it loads; the migration result is what matters.
+    logging.getLogger("alembic.runtime.plugins").setLevel(logging.WARNING)
 
 
 class _JsonFormatter(logging.Formatter):

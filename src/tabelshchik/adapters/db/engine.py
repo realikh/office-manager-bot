@@ -60,9 +60,37 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 
 def create_all(engine: Engine) -> None:
-    """Create the schema directly. Used by tests and by first-run bootstrap; production
-    upgrades go through Alembic."""
+    """Create the schema directly, without a migration history.
+
+    For tests and in-memory databases only. A real database goes through
+    :func:`upgrade_schema`, so that changing a model later is a migration rather than a
+    manual rescue of live data.
+    """
     Base.metadata.create_all(engine)
+
+
+def upgrade_schema(engine: Engine) -> None:
+    """Bring the database up to the latest migration.
+
+    Runs on every boot. On a fresh database this creates everything; on an existing one
+    it applies whatever is outstanding and is a no-op when there is nothing to do.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    root = Path(__file__).resolve().parents[3].parent
+    ini = root / "alembic.ini"
+    if not ini.is_file():
+        # Running from an installed wheel without the migration tree beside it; fall
+        # back rather than refusing to start.
+        Base.metadata.create_all(engine)
+        return
+
+    config = Config(str(ini))
+    config.set_main_option("script_location", str(root / "migrations"))
+    with engine.begin() as connection:
+        config.attributes["connection"] = connection
+        command.upgrade(config, "head")
 
 
 @contextmanager

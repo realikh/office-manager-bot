@@ -21,6 +21,7 @@ from tabelshchik.application.voice import (
     format_date,
     lead_in,
     mention,
+    office_header,
     roster_fingerprint,
 )
 from tabelshchik.domain.calendar import next_working_day
@@ -115,6 +116,10 @@ async def send_attendance_reminder(
             office_name=context.office.name,
         )
 
+    if _chat_is_shared(offices, context.office.chat_id):
+        # Two offices post into this chat, so every message says which one it is about.
+        text = f"{office_header(context.office.name, common)}\n\n{text}"
+
     if correction:
         prefix = voice.catalog.text("attendance.correction").format(
             date=format_date(target, common), office=context.office.name
@@ -146,6 +151,12 @@ async def send_attendance_reminder(
         silent=silent,
         correction=correction,
     )
+
+
+def _chat_is_shared(offices: OfficeStore, chat_id: int | None) -> bool:
+    if chat_id is None:
+        return False
+    return sum(1 for o in offices.active_offices() if o.chat_id == chat_id) > 1
 
 
 def _mention_line(employees: dict[str, Employee], employee_id: str) -> str:

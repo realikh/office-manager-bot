@@ -15,14 +15,17 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 # Dependencies first: this layer is cached unless the lockfile itself changes.
-COPY pyproject.toml uv.lock* README.md ./
-RUN uv sync --frozen --no-install-project --no-dev 2>/dev/null \
-    || uv sync --no-install-project --no-dev
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-install-project --no-dev
 
 COPY src/ ./src/
 COPY config/ ./config/
 COPY scripts/ ./scripts/
-RUN uv sync --no-dev 2>/dev/null || uv sync --no-dev --no-editable
+# The migration tree ships with the image: the schema is brought up to date on boot,
+# so the container must carry the migrations that do it.
+COPY alembic.ini ./
+COPY migrations/ ./migrations/
+RUN uv sync --frozen --no-dev
 
 # Unprivileged, and owning only what it must write to.
 RUN useradd --create-home --uid 10001 tabelshchik \

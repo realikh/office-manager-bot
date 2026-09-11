@@ -31,6 +31,15 @@ class LoadedConfig:
     def office(self, office_id: str) -> OfficeSeed | None:
         return next((office for office in self.offices if office.id == office_id), None)
 
+    @property
+    def shared_chat_ids(self) -> frozenset[int]:
+        """Chats that more than one office posts into."""
+        seen: dict[int, int] = {}
+        for office in self.offices:
+            if office.chat_id is not None:
+                seen[office.chat_id] = seen.get(office.chat_id, 0) + 1
+        return frozenset(chat for chat, count in seen.items() if count > 1)
+
 
 def load(config_dir: Path) -> LoadedConfig:
     """Load and validate the whole configuration directory."""
