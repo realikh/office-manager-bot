@@ -1,0 +1,74 @@
+# Табельщик — operational settings.
+#
+# This file holds settings an operator changes. Rosters, offices and weekly templates
+# live in the database (seeded once from config/offices/*.yaml) so that admins can edit
+# them from the bot without a deploy.
+#
+# Unknown keys are a startup error, not a silent default — if you misspell something here
+# the bot refuses to start rather than quietly ignoring it.
+
+timezone: Asia/Almaty
+
+# Telegram user ids allowed into admin mode. Overridable with the ADMIN_IDS env var.
+admins: []
+
+reminders:
+  attendance:
+    time: "15:30"
+    # One rule, no weekday special-casing: announce the next working day.
+    # Mon→Tue and Fri→Mon both fall out of it; listing `sun` is what covers Sun→Monday.
+    runOn: [mon, tue, wed, thu, fri, sun]
+    pin: false
+
+# Silent means the message still arrives — it just does not buzz anyone at 21:00.
+silentHours:
+  default: { from: "20:00", to: "08:00" }   # crosses midnight
+  saturday: all-day
+  sunday: { from: "00:00", to: "10:00" }
+
+schedule:
+  horizonWeeks: 6           # generated and visible
+  freezeWeeks: 1            # announced and immutable
+  maxDaysPerWeek: 5
+  autoExtend: { weekday: thu, time: "10:00" }
+  holidayCalendar: KZ
+  absencePolicy: NO_DEBT    # time away accrues no obligation to make up
+  surplusClamp: 10
+
+# The database must not grow forever. Rows older than the window are folded into a
+# per-employee ledger checkpoint (never pruned) and then deleted, so bounding storage
+# costs no fairness history.
+retention:
+  scheduleMonths: 3
+  jobRunsDays: 90
+  auditDays: 180
+  aiUsageDays: 60
+
+personality:
+  enabled: true
+  rotation: daily           # one mood per office per day
+  moods:
+    toxic: { weight: 55 }
+    fun: { weight: 15 }
+    happy: { weight: 10 }
+    sad: { weight: 10 }
+    depressive: { weight: 10 }
+  safeMode: false           # forces `fun` everywhere, immediately
+  bannedTerms: []
+
+ai:
+  enabled: true
+  model: gpt-4.1-nano       # cheapest nano-class chat model; one line to change
+  maxTokens: 400
+  temperature: 0.9
+  perUserDailyLimit: 10
+  globalDailyLimit: 200     # cost stop-loss
+  triggers: [mention, reply, private]
+  requestTimeoutSeconds: 20
+  maxRetries: 2
+
+health:
+  pingUrl: ""               # optional dead-man's switch, e.g. healthchecks.io
+  pingIntervalMinutes: 15
+  catchUpGraceHours: 12     # how far back the startup sweep re-runs missed jobs
+  nightlyBackup: true

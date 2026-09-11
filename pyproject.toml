@@ -55,11 +55,22 @@ ignore = ["RUF001", "RUF002", "RUF003"]  # ambiguous unicode: we write Russian
 python_version = "3.13"
 strict = true
 files = ["src", "tests"]
+mypy_path = ["scripts"]
 plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["holidays.*", "xlsxwriter.*", "apscheduler.*"]
 ignore_missing_imports = true
+
+# Strict typing earns its keep in src, where the types are the design. In tests it mostly
+# produces annotation noise on throwaway fixtures, so the checks that matter stay on and
+# the ceremony comes off.
+[[tool.mypy.overrides]]
+module = ["tests.*", "migrate_from_old_bot"]
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+disallow_untyped_calls = false
+disallow_any_generics = false
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
