@@ -44,11 +44,21 @@ def test_the_dockerfile_command_actually_parses() -> None:
 
 
 def test_the_healthcheck_command_parses() -> None:
-    text = Path("Dockerfile").read_text(encoding="utf-8")
-    match = re.search(r"CMD\s+(\[\"tabelshchik\".*\])", text)
+    """Docker runs this every 30 seconds; a typo would report the bot dead forever."""
+    match = re.search(r'CMD\s+(\["tabelshchik".*\])', Path("Dockerfile").read_text("utf-8"))
     assert match, "no healthcheck command found"
+
     _entry, *argv = json.loads(match.group(1))
-    assert parse(*argv).command == "validate"
+    assert parse(*argv).command == "healthcheck"
+
+
+def test_the_healthcheck_is_frequent_enough_to_be_useful_to_a_deploy() -> None:
+    """A deploy waits for this verdict. At the old five-minute interval it would have
+    given up long before the first check ran."""
+    text = Path("Dockerfile").read_text("utf-8")
+    interval = re.search(r"--interval=(\d+)s", text)
+    assert interval, "healthcheck interval is not in seconds"
+    assert int(interval.group(1)) <= 60
 
 
 # ------------------------------------------------------- flags on either side
@@ -152,3 +162,82 @@ def test_the_database_path_is_inside_the_volume() -> None:
 
     mounts = compose()["services"]["tabelshchik"]["volumes"]
     assert any(m.split(":")[1] == "/data" for m in mounts)
+
+
+# ---------------------------------------------------------------- the deploy pipeline
+
+
+def workflow() -> dict[str, Any]:
+    import yaml
+
+    parsed = yaml.safe_load(Path(".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    assert isinstance(parsed, dict)
+    return parsed
+
+
+def test_deploying_requires_the_checks_to_pass() -> None:
+    """The whole safety property: a red build must not reach the VM."""
+    assert workflow()["jobs"]["deploy"]["needs"] == "check"
+
+
+def test_only_main_deploys() -> None:
+    condition = workflow()["jobs"]["deploy"]["if"]
+    assert "refs/heads/main" in condition
+    assert "push" in condition
+
+
+def test_deploys_do_not_run_concurrently() -> None:
+    """Two builds racing on one VM would interleave a git reset with a docker build."""
+    concurrency = workflow()["jobs"]["deploy"]["concurrency"]
+    assert concurrency["group"]
+    # Cancelling mid-build would leave the VM holding a half-built image.
+    assert concurrency["cancel-in-progress"] is False
+
+
+def test_the_host_key_is_pinned() -> None:
+    """Disabling host key checking would accept whatever answers on that address."""
+    steps = workflow()["jobs"]["deploy"]["steps"]
+    script = "\n".join(step.get("run", "") for step in steps)
+    # Comments stripped: a line explaining why we do not do this is not doing it.
+    code = "\n".join(line for line in script.splitlines() if not line.strip().startswith("#"))
+
+    assert "known_hosts" in code
+    assert "StrictHostKeyChecking=no" not in code
+    assert "StrictHostKeyChecking=accept-new" not in code
+
+
+def test_secrets_are_passed_by_env_not_interpolated_into_the_script() -> None:
+    """Interpolating a key straight into `run` puts it in the shell's command line."""
+    step = next(s for s in workflow()["jobs"]["deploy"]["steps"] if "run" in s)
+    assert "secrets.DEPLOY_SSH_KEY" in str(step.get("env", {}))
+    assert "secrets.DEPLOY_SSH_KEY" not in step["run"]
+
+
+def test_the_deploy_script_is_executable_and_parses() -> None:
+    import os
+    import subprocess
+
+    script = Path("scripts/deploy.sh")
+    assert os.access(script, os.X_OK), "deploy.sh is not executable"
+    subprocess.run(["bash", "-n", str(script)], check=True)
+
+
+def test_the_deploy_script_survives_being_updated_while_it_runs() -> None:
+    """It git-resets the repository it lives in, and bash reads scripts incrementally.
+    Wrapping the body in a function forces a full parse before anything executes."""
+    source = Path("scripts/deploy.sh").read_text(encoding="utf-8")
+    assert "main() {" in source
+    assert source.rstrip().endswith('main "$@"')
+
+
+def test_the_deploy_script_refuses_a_dirty_tree() -> None:
+    """A reset would silently discard a hand-edited office config."""
+    source = Path("scripts/deploy.sh").read_text(encoding="utf-8")
+    assert "git diff --quiet" in source
+
+
+def test_alerts_do_not_go_through_the_bot() -> None:
+    """The bot is what just failed, so the alert cannot depend on it."""
+    source = Path("scripts/deploy.sh").read_text(encoding="utf-8")
+    assert "api.telegram.org" in source
+    assert "curl" in source

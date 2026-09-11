@@ -108,6 +108,10 @@ None of those need a Telegram token. To run for real, fill in `.env` and:
 docker compose up -d
 ```
 
+Pushes to `main` deploy themselves once set up: CI gates the deploy, and a deploy that
+comes up unhealthy alerts on Telegram and is left down. See
+[docs/first-deploy.md](docs/first-deploy.md#automatic-deploys).
+
 Deploying for the first time: [docs/first-deploy.md](docs/first-deploy.md) — a runbook
 with the Telegram prerequisites that fail silently if skipped, and the three checks that
 prove reliability rather than merely that it starts. General deployment notes and the

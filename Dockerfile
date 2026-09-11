@@ -39,10 +39,12 @@ ENV PATH="/app/.venv/bin:$PATH" \
 
 VOLUME ["/data"]
 
-# Long polling means no inbound port, so a health check has to be something the process
-# can answer for itself. Validating config exercises the interpreter and the config path.
-HEALTHCHECK --interval=5m --timeout=30s --start-period=30s --retries=3 \
-    CMD ["tabelshchik", "validate"]
+# Reads the heartbeat the bot touches from its own event loop, so "healthy" means the
+# loop is turning — not merely that a second process can parse the config, which is what
+# the old `validate` check proved and which a wedged bot would also pass. The short
+# interval is what lets a deploy get a verdict in seconds rather than minutes.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD ["tabelshchik", "healthcheck"]
 
 ENTRYPOINT ["tabelshchik"]
 CMD ["run", "--json-logs"]

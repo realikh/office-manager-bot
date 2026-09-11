@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
+import time
 from pathlib import Path
 
 from tabelshchik.adapters.fakes import RecordingNotifier
@@ -20,7 +21,8 @@ from tabelshchik.application.send_attendance_reminder import send_attendance_rem
 from tabelshchik.bootstrap.container import Services, build_services
 from tabelshchik.bootstrap.logging import configure_logging
 from tabelshchik.bootstrap.settings import config_dir, database_path, load_secrets
-from tabelshchik.config.loader import ConfigError, load
+from tabelshchik.config.loader import ConfigError, load, parse_file
+from tabelshchik.config.models import AppConfig
 
 
 def _global_options(*, suppress: bool) -> argparse.ArgumentParser:
@@ -59,6 +61,9 @@ def build_parser() -> argparse.ArgumentParser:
     commands = parser.add_subparsers(dest="command", required=True)
     commands.add_parser("run", help="run the bot", parents=[inherited])
     commands.add_parser("validate", help="check the configuration and exit", parents=[inherited])
+    commands.add_parser(
+        "healthcheck", help="is the running bot alive? (for Docker)", parents=[inherited]
+    )
 
     regen = commands.add_parser("regenerate", help="rebuild a schedule", parents=[inherited])
     regen.add_argument("--office", required=True)
@@ -92,6 +97,7 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "run": _run,
         "validate": _validate,
+        "healthcheck": _healthcheck,
         "regenerate": _regenerate,
         "preview": _preview,
         "simulate": _simulate,
@@ -125,6 +131,40 @@ def _run(args: argparse.Namespace) -> int:
         asyncio.run(run_bot(services))
     except KeyboardInterrupt:
         print("stopped")
+    return 0
+
+
+def _healthcheck(args: argparse.Namespace) -> int:
+    """Is the running bot's event loop still turning?
+
+    Reads the heartbeat file the bot touches from its own loop. Deliberately does not
+    build the services or open the database: a healthcheck that does real work can fail
+    for reasons that have nothing to do with the bot being alive, and runs every 30
+    seconds forever.
+    """
+    from tabelshchik.config.messages import MessagesConfig  # noqa: F401  (schema import)
+
+    try:
+        app = parse_file((args.config or config_dir()) / "app.yaml", AppConfig)
+    except ConfigError as error:
+        print(f"unhealthy: {error}", file=sys.stderr)
+        return 1
+
+    beat = Path(app.health.heartbeat_file)
+    if not beat.exists():
+        print(f"unhealthy: no heartbeat at {beat}", file=sys.stderr)
+        return 1
+
+    age = time.time() - beat.stat().st_mtime
+    if age > app.health.heartbeat_stale_seconds:
+        print(
+            f"unhealthy: heartbeat is {age:.0f}s old "
+            f"(stale after {app.health.heartbeat_stale_seconds}s)",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"healthy: heartbeat {age:.0f}s old")
     return 0
 
 

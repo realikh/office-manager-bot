@@ -10,9 +10,11 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import os
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 from aiogram.exceptions import TelegramAPIError
@@ -98,8 +100,9 @@ async def lifespan(services: Services) -> AsyncIterator[Runtime]:
     runner.start()
     runtime = Runtime(services=services, runner=runner)
 
-    if services.app.health.ping_url:
-        runtime.heartbeat = asyncio.create_task(_heartbeat(services))
+    # Always: the local heartbeat is what the container healthcheck reads, so it must
+    # run whether or not an external dead-man's switch is configured.
+    runtime.heartbeat = asyncio.create_task(_heartbeat(services))
 
     try:
         yield runtime
@@ -138,19 +141,43 @@ def _seed_empty_schedules(services: Services) -> None:
 
 
 async def _heartbeat(services: Services) -> None:
-    """An external dead-man's switch.
+    """Proof that the event loop is turning, for two different audiences.
 
-    The job ledger and the catch-up sweep handle a process that comes back. This handles
-    one that does not: if the pings stop, whoever is watching finds out in minutes rather
-    than through a week of missing reminders.
+    Locally it touches a file the container healthcheck reads. Because this task runs on
+    the bot's own loop, a fresh file means the loop is alive — which a process that
+    started and then wedged would not manage, and which merely being able to run
+    `validate` in a second process never proved.
+
+    Outwardly, when configured, it pings a dead-man's switch. The job ledger and the
+    catch-up sweep handle a process that comes back; this handles one that does not.
     """
-    url = services.app.health.ping_url
-    interval = services.app.health.ping_interval_minutes * 60
+    health = services.app.health
+    tick = health.heartbeat_interval_seconds
+    ping_every = max(1, (health.ping_interval_minutes * 60) // tick)
+    ticks = 0
 
     while True:
-        try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                await client.get(url)
-        except httpx.HTTPError:
-            logger.warning("health ping failed")
-        await asyncio.sleep(interval)
+        _touch(health.heartbeat_file)
+
+        if health.ping_url and ticks % ping_every == 0:
+            try:
+                async with httpx.AsyncClient(timeout=10) as client:
+                    await client.get(health.ping_url)
+            except httpx.HTTPError:
+                logger.warning("health ping failed")
+
+        ticks += 1
+        await asyncio.sleep(tick)
+
+
+def _touch(path: str) -> None:
+    target = Path(path)
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.touch()
+        # touch() only creates; an existing file needs its mtime moved explicitly.
+        os.utime(target, None)
+    except OSError:
+        # A heartbeat that cannot be written should not take the bot down with it; the
+        # healthcheck going stale is the correct, visible consequence.
+        logger.warning("could not write the heartbeat file %s", path, exc_info=True)

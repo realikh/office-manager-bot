@@ -196,6 +196,16 @@ class HealthSection(Base):
     #: Optional dead-man's switch (healthchecks.io free tier). Empty disables it.
     ping_url: str = ""
     ping_interval_minutes: int = Field(default=15, ge=1)
+    #: Touched by the bot's own event loop, and read by the container healthcheck. A
+    #: fresh file is the only evidence that the loop is actually turning — a process
+    #: that starts and then wedges looks identical from the outside.
+    heartbeat_file: str = "/data/heartbeat"
+    #: How old the file may get before the container is considered unhealthy. Comfortably
+    #: more than the tick interval, so one slow iteration is not a false alarm.
+    heartbeat_stale_seconds: int = Field(default=180, ge=30)
+    #: The file is touched at least this often, regardless of the external ping interval:
+    #: a healthcheck that has to wait 15 minutes for a verdict is no use to a deploy.
+    heartbeat_interval_seconds: int = Field(default=30, ge=5, le=300)
     #: How far back the startup sweep will re-run occurrences that were missed.
     catch_up_grace_hours: int = Field(default=12, ge=0, le=72)
     nightly_backup: bool = True

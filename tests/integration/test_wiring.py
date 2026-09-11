@@ -193,3 +193,32 @@ def test_the_schedule_is_seeded_before_catch_up_runs() -> None:
 
     source = inspect.getsource(module.lifespan)
     assert source.index("_seed_empty_schedules") < source.index("runner.catch_up")
+
+
+# ------------------------------------------------------------------------ liveness
+
+
+async def test_the_heartbeat_runs_without_an_external_ping_url(services, tmp_path) -> None:
+    """It used to run only when a dead-man's switch was configured. The container
+    healthcheck reads the same file, so it has to run either way."""
+    import asyncio
+
+    from tabelshchik.bootstrap.lifespan import lifespan
+
+    beat = tmp_path / "beat"
+    # The config models are frozen, so redirect the path the blunt way for this test.
+    object.__setattr__(services.config.app.health, "heartbeat_file", str(beat))
+    object.__setattr__(services.config.app.health, "heartbeat_interval_seconds", 5)
+    assert not services.config.app.health.ping_url
+
+    async with lifespan(services):
+        await asyncio.sleep(0.1)  # let the task take its first tick
+        assert beat.exists(), "no heartbeat written"
+
+
+def test_an_unwritable_heartbeat_does_not_take_the_bot_down(services) -> None:
+    """A heartbeat that cannot be written should go stale — visibly — not crash the
+    process it exists to monitor."""
+    from tabelshchik.bootstrap.lifespan import _touch
+
+    _touch("/proc/definitely/not/writable/beat")  # must not raise

@@ -30,3 +30,34 @@ jobs:
         run: uv run alembic check
       - name: Tests
         run: uv run pytest -q
+
+  deploy:
+    # A red build never reaches the VM: `needs` makes this job wait for `check`, and a
+    # failed `check` skips it entirely.
+    needs: check
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: deploy
+      # Let an in-flight deploy finish rather than killing it mid-build and leaving the
+      # VM holding a half-built image.
+      cancel-in-progress: false
+    steps:
+      - name: Deploy over SSH
+        env:
+          KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$KEY" > ~/.ssh/deploy && chmod 600 ~/.ssh/deploy
+          # Pinned from a secret rather than StrictHostKeyChecking=no, which would accept
+          # whatever machine happens to answer on that address.
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts && chmod 600 ~/.ssh/known_hosts
+
+          # The key is locked to a forced command, so this argument is ignored by the
+          # server; it is here to make the intent readable in the Actions log.
+          ssh -i ~/.ssh/deploy -o IdentitiesOnly=yes -o ConnectTimeout=15 \
+              "$USER@$HOST" deploy

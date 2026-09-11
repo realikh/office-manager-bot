@@ -267,6 +267,73 @@ rotates. Change either in **/admin → 🪑 Свободные места**.
 
 ---
 
+## Automatic deploys
+
+Once set up, a push to `main` deploys itself — but only if CI is green, and a deploy that
+comes up broken sends a Telegram alert and is left down rather than quietly failing.
+
+### One-time setup
+
+**1. A dedicated key**, not your personal one, so its blast radius is a single command on
+a single machine:
+
+```bash
+ssh-keygen -t ed25519 -N "" -C "tabelshchik-deploy" -f ~/.ssh/tabelshchik-deploy
+```
+
+**2. Install the public half on the VM**, locked to the deploy script:
+
+```bash
+printf 'command="%s",no-pty,no-agent-forwarding,no-port-forwarding,no-X11-forwarding %s\n' \
+  "/home/ubuntu/tabelshchik/scripts/deploy.sh" "$(cat ~/.ssh/tabelshchik-deploy.pub)" \
+  | ssh tabelshchik 'cat >> ~/.ssh/authorized_keys'
+```
+
+The forced command is the point: whatever a client asks to run, sshd runs the deploy
+script instead. A leaked key can trigger a deploy and nothing else — no shell, no file
+access, no port forwarding.
+
+**3. Four repository secrets** at *Settings → Secrets and variables → Actions*:
+
+| Secret | Value |
+|---|---|
+| `DEPLOY_SSH_KEY` | the **private** half — `pbcopy < ~/.ssh/tabelshchik-deploy` |
+| `DEPLOY_HOST` | the VM's public IP |
+| `DEPLOY_USER` | `ubuntu` |
+| `DEPLOY_KNOWN_HOSTS` | `ssh-keyscan <IP>` output |
+
+`DEPLOY_KNOWN_HOSTS` pins the host key. Without it the deploy would have to accept
+whatever machine answers on that address.
+
+### What happens on a push
+
+`check` runs lint, types, the architecture contracts, migration drift and the tests. Only
+if it passes does `deploy` connect, and then the VM:
+
+1. refuses to continue if its working tree was edited by hand — a reset would silently
+   discard it;
+2. resets to `origin/main` and rebuilds;
+3. waits for the container to report **healthy**, giving up early if it is restarting or
+   has exited, because a crash loop will never become healthy;
+4. on any failure, sends the last log lines to the admin chat and exits non-zero, turning
+   the Actions run red.
+
+That alert goes to Telegram **by curl, not through the bot** — the bot is precisely what
+has just failed.
+
+### What "healthy" means
+
+The bot touches `/data/heartbeat` from its own event loop every 30 seconds, and the
+container healthcheck fails if that file goes stale. So healthy means the loop is
+actually turning — not merely that the process started, which is all the old check
+(running `validate` in a second process) ever proved.
+
+```bash
+ssh tabelshchik 'docker inspect -f "{{.State.Health.Status}}" tabelshchik'
+```
+
+---
+
 ## Day-to-day
 
 ```bash
