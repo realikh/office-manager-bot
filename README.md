@@ -108,8 +108,10 @@ None of those need a Telegram token. To run for real, fill in `.env` and:
 docker compose up -d
 ```
 
-Deployment on Oracle Cloud's Always Free tier, including the caveats that actually
-matter, is in [docs/deploy.md](docs/deploy.md).
+Deploying for the first time: [docs/first-deploy.md](docs/first-deploy.md) — a runbook
+with the Telegram prerequisites that fail silently if skipped, and the three checks that
+prove reliability rather than merely that it starts. General deployment notes and the
+Oracle Always Free caveats are in [docs/deploy.md](docs/deploy.md).
 
 ## Migrating from office-rotation-bot
 
