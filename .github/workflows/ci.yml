@@ -1,0 +1,28 @@
+name: ci
+
+# Tests only. The bot itself does not run here — that is the whole point of the rebuild.
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+      - run: uv sync
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format
+        run: uv run ruff format --check .
+      - name: Types
+        run: uv run mypy
+      - name: Architecture
+        run: uv run lint-imports
+      - name: Config
+        run: uv run tabelshchik validate
+      - name: Tests
+        run: uv run pytest -q

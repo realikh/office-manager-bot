@@ -1,0 +1,20 @@
+services:
+  tabelshchik:
+    build: .
+    image: tabelshchik:latest
+    container_name: tabelshchik
+    # The first line of the reliability story: survives a crash, and comes back after a
+    # host reboot provided the Docker daemon is enabled at boot.
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: Asia/Almaty
+    volumes:
+      - ./data:/data
+      # Mounted read-only: config is edited in git and deployed, never written at runtime.
+      - ./config:/app/config:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

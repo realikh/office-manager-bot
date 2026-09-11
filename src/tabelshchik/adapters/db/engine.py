@@ -12,9 +12,11 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import Engine, create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.pool import NullPool, StaticPool
 
 from tabelshchik.adapters.db.models import Base
 
@@ -24,10 +26,20 @@ def create_db_engine(database_path: Path | str, *, echo: bool = False) -> Engine
     if database_path != ":memory:":
         Path(database_path).parent.mkdir(parents=True, exist_ok=True)
         url = f"sqlite:///{database_path}"
+        # NullPool: every session opens and closes its own connection. Transactions here
+        # are sub-millisecond, so pooling buys nothing, while idle pooled handles cost
+        # non-deterministic cleanup and the occasional "database is locked".
+        kwargs: dict[str, Any] = {"poolclass": NullPool}
     else:
         url = "sqlite://"
+        # An in-memory database lives only as long as its connection, so the one
+        # connection has to be shared or every session would see an empty schema.
+        kwargs = {
+            "poolclass": StaticPool,
+            "connect_args": {"check_same_thread": False},
+        }
 
-    engine = create_engine(url, echo=echo, future=True)
+    engine = create_engine(url, echo=echo, future=True, **kwargs)
 
     @event.listens_for(engine, "connect")
     def _configure(connection, _record) -> None:  # type: ignore[no-untyped-def]

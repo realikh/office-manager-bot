@@ -10,3 +10,4 @@ data/*.db-*
 out/
 .env
 .DS_Store
+.import_linter_cache/
