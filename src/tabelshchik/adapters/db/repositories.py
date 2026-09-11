@@ -286,6 +286,17 @@ class SqlScheduleStore(SqlRepository):
                 ).all()
             )
 
+    def has_schedule_from(self, office_id: str, start: date) -> bool:
+        """Whether anything at all is planned on or after ``start``."""
+        with session_scope(self._sessions) as session:
+            found = session.scalar(
+                select(models.ScheduleDay.day)
+                .where(models.ScheduleDay.office_id == office_id)
+                .where(models.ScheduleDay.day >= start)
+                .limit(1)
+            )
+            return found is not None
+
     def apply(self, office_id: str, diff: ScheduleDiff, *, generation_id: int) -> None:
         """Persist a regeneration as a diff, never as a truncate-and-rewrite.
 

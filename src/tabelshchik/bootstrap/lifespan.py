@@ -67,6 +67,8 @@ async def lifespan(services: Services) -> AsyncIterator[Runtime]:
     if replayed:
         logger.warning("replayed %s missed job(s) on startup", len(replayed))
 
+    _seed_empty_schedules(services)
+
     runner.start()
     runtime = Runtime(services=services, runner=runner)
 
@@ -82,6 +84,31 @@ async def lifespan(services: Services) -> AsyncIterator[Runtime]:
             with contextlib.suppress(asyncio.CancelledError):
                 await runtime.heartbeat
         services.engine.dispose()
+
+
+def _seed_empty_schedules(services: Services) -> None:
+    """Give an office a schedule the first time it has none.
+
+    Without this a fresh deployment sits silent until the weekly regeneration job fires,
+    which on a Monday means three days of a bot that looks broken. Offices that already
+    have a schedule are left alone — this is a cold start, not a rebuild.
+    """
+    from tabelshchik.application.regenerate_schedule import regenerate
+
+    today = services.clock.today()
+    for office in services.offices.active_offices():
+        if services.schedule.has_schedule_from(office.id, today):
+            continue
+        logger.info("no schedule for %s yet; generating the first one", office.id)
+        regenerate(
+            office_id=office.id,
+            offices=services.offices,
+            schedule=services.schedule,
+            ledger=services.ledger,
+            clock=services.clock,
+            policy=services.schedule_policy,
+            triggered_by="first-boot",
+        )
 
 
 async def _heartbeat(services: Services) -> None:

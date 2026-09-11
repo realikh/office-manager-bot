@@ -8,6 +8,7 @@ registered in the wrong order, a protocol the container stopped satisfying.
 from __future__ import annotations
 
 import gc
+from datetime import timedelta
 from pathlib import Path
 
 import pytest
@@ -118,3 +119,37 @@ def test_malformed_ids_are_ignored_rather_than_crashing_the_boot() -> None:
     secrets = load_secrets({"ADMIN_IDS": "1,not-a-number,", "ADMIN_CHAT_ID": "nonsense"})
     assert secrets.admin_ids == frozenset({1})
     assert secrets.admin_chat_id is None
+
+
+def test_a_fresh_deployment_generates_its_first_schedule(services) -> None:
+    """Without this a Monday deploy sits silent until Thursday's job fires, which looks
+    exactly like a broken bot."""
+    from tabelshchik.bootstrap.lifespan import _seed_empty_schedules
+
+    today = services.clock.today()
+    assert not services.schedule.has_schedule_from("ovest", today)
+
+    _seed_empty_schedules(services)
+
+    assert services.schedule.has_schedule_from("ovest", today)
+
+
+def test_a_second_boot_does_not_rebuild_an_existing_schedule(services) -> None:
+    """It is a cold start, not a rebuild: an admin's manual changes must survive a
+    restart."""
+    from tabelshchik.bootstrap.lifespan import _seed_empty_schedules
+
+    _seed_empty_schedules(services)
+    today = services.clock.today()
+    before = [
+        (snapshot.day, snapshot.roster)
+        for snapshot in services.schedule.days_between("ovest", today, today + timedelta(days=40))
+    ]
+
+    _seed_empty_schedules(services)
+
+    after = [
+        (snapshot.day, snapshot.roster)
+        for snapshot in services.schedule.days_between("ovest", today, today + timedelta(days=40))
+    ]
+    assert after == before
