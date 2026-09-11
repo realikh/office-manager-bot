@@ -141,6 +141,50 @@ class LedgerStore(Protocol):
     def day_records(self, office_id: str, *, upto: date) -> list[DayRecord]: ...
 
 
+class AbsenceStore(Protocol):
+    def add(
+        self,
+        employee_id: str,
+        start: date,
+        end: date,
+        *,
+        kind: str,
+        note: str = "",
+        actor_id: int | None = None,
+        at: datetime,
+    ) -> int: ...
+
+    def remove(self, absence_id: int) -> bool: ...
+    def for_employee(
+        self, employee_id: str, *, upcoming_from: date | None = None
+    ) -> Sequence[tuple[int, date, date, str]]: ...
+    def get(self, absence_id: int) -> tuple[int, str, date, date] | None: ...
+
+
+class RosterStore(Protocol):
+    """Everything an admin can change about who works where."""
+
+    def add_employee(
+        self,
+        office_id: str,
+        employee_id: str,
+        full_name: str,
+        *,
+        username: str | None = None,
+        gender: str = "male",
+        team_id: str | None = None,
+        started_on: date | None = None,
+    ) -> None: ...
+
+    def remove_employee(self, employee_id: str, *, ended_on: date | None = None) -> bool: ...
+    def rename_employee(self, employee_id: str, full_name: str) -> bool: ...
+    def set_username(self, employee_id: str, username: str | None) -> bool: ...
+    def set_vacant_desks(self, office_id: str, weekday: int, desks: int) -> None: ...
+    def toggle_fixed(self, office_id: str, weekday: int, employee_id: str) -> bool: ...
+    def bump_seed(self, office_id: str) -> int: ...
+    def set_chat_id(self, office_id: str, chat_id: int | None) -> None: ...
+
+
 class MaintenanceStore(Protocol):
     """Deletion, kept apart from the stores that only ever add.
 

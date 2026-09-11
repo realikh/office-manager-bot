@@ -23,10 +23,12 @@ from tabelshchik.application.ports import (
 from tabelshchik.domain.calendar import CalendarSpec
 from tabelshchik.domain.entities import (
     Absence,
+    AbsenceKind,
     Assignment,
     AssignmentSource,
     AssignmentStatus,
     Employee,
+    Gender,
     LedgerEntry,
     Office,
     WeeklyTemplate,
@@ -787,3 +789,156 @@ class SqlMoodStore(SqlRepository):
             else:
                 row.mood = mood
                 row.chosen_by = by
+
+
+# ------------------------------------------------------------------ absences and roster
+
+
+class SqlAbsenceStore(SqlRepository):
+    def add(
+        self,
+        employee_id: str,
+        start: date,
+        end: date,
+        *,
+        kind: str = "vacation",
+        note: str = "",
+        actor_id: int | None = None,
+        at: datetime,
+    ) -> int:
+        with session_scope(self._sessions) as session:
+            row = models.Absence(
+                employee_id=employee_id,
+                start_date=start,
+                end_date=end,
+                kind=AbsenceKind(kind),
+                note=note,
+                created_by=actor_id,
+                created_at=at,
+            )
+            session.add(row)
+            session.flush()
+            return row.id
+
+    def remove(self, absence_id: int) -> bool:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Absence, absence_id)
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
+    def get(self, absence_id: int) -> tuple[int, str, date, date] | None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Absence, absence_id)
+            if row is None:
+                return None
+            return (row.id, row.employee_id, row.start_date, row.end_date)
+
+    def for_employee(
+        self, employee_id: str, *, upcoming_from: date | None = None
+    ) -> Sequence[tuple[int, date, date, str]]:
+        with session_scope(self._sessions) as session:
+            query = select(models.Absence).where(models.Absence.employee_id == employee_id)
+            if upcoming_from is not None:
+                query = query.where(models.Absence.end_date >= upcoming_from)
+            rows = session.scalars(query.order_by(models.Absence.start_date)).all()
+            return [(row.id, row.start_date, row.end_date, str(row.kind)) for row in rows]
+
+
+class SqlRosterStore(SqlRepository):
+    def add_employee(
+        self,
+        office_id: str,
+        employee_id: str,
+        full_name: str,
+        *,
+        username: str | None = None,
+        gender: str = "male",
+        team_id: str | None = None,
+        started_on: date | None = None,
+    ) -> None:
+        with session_scope(self._sessions) as session:
+            session.add(
+                models.Employee(
+                    id=employee_id,
+                    office_id=office_id,
+                    full_name=full_name,
+                    telegram_username=username,
+                    gender=Gender(gender),
+                    team_id=team_id,
+                    started_on=started_on,
+                )
+            )
+
+    def remove_employee(self, employee_id: str, *, ended_on: date | None = None) -> bool:
+        """Ending a tenure is preferred to deleting a person.
+
+        A hard delete would cascade away their history and silently rewrite the ledger;
+        an end date stops them being scheduled while leaving the record intact.
+        """
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Employee, employee_id)
+            if row is None:
+                return False
+            if ended_on is None:
+                session.delete(row)
+            else:
+                row.ended_on = ended_on
+            return True
+
+    def rename_employee(self, employee_id: str, full_name: str) -> bool:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Employee, employee_id)
+            if row is None:
+                return False
+            row.full_name = full_name
+            return True
+
+    def set_username(self, employee_id: str, username: str | None) -> bool:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Employee, employee_id)
+            if row is None:
+                return False
+            row.telegram_username = username.lstrip("@") if username else None
+            return True
+
+    def set_vacant_desks(self, office_id: str, weekday: int, desks: int) -> None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.WeeklyTemplateSlot, (office_id, weekday))
+            if desks <= 0:
+                if row is not None:
+                    session.delete(row)
+                return
+            if row is None:
+                row = models.WeeklyTemplateSlot(office_id=office_id, weekday=weekday)
+                session.add(row)
+            row.vacant_desks = desks
+
+    def toggle_fixed(self, office_id: str, weekday: int, employee_id: str) -> bool:
+        """Returns whether the person is fixed on that weekday afterwards."""
+        with session_scope(self._sessions) as session:
+            key = (office_id, weekday, employee_id)
+            row = session.get(models.TemplateFixed, key)
+            if row is not None:
+                session.delete(row)
+                return False
+            session.add(
+                models.TemplateFixed(office_id=office_id, weekday=weekday, employee_id=employee_id)
+            )
+            return True
+
+    def bump_seed(self, office_id: str) -> int:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Office, office_id)
+            if row is None:
+                raise LookupError(f"unknown office: {office_id}")
+            row.seed_nonce += 1
+            return row.seed_nonce
+
+    def set_chat_id(self, office_id: str, chat_id: int | None) -> None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Office, office_id)
+            if row is None:
+                raise LookupError(f"unknown office: {office_id}")
+            row.chat_id = chat_id
