@@ -14,7 +14,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.types import TelegramObject
 
-from tabelshchik.adapters.telegram.routers import admin, chat, common, employee
+from tabelshchik.adapters.telegram.routers import admin, bind, chat, common, employee
 from tabelshchik.application.context import BotContext
 
 
@@ -46,6 +46,9 @@ def create_dispatcher(services: BotContext) -> Dispatcher:
 
     dispatcher.include_router(common.router)
     dispatcher.include_router(admin.router)
+    # Groups only, and before the catch-all: /bind is the one admin action that has to
+    # happen where the roster is read rather than in a private chat.
+    dispatcher.include_router(bind.router)
     dispatcher.include_router(employee.router)
     # Last: it is the catch-all.
     dispatcher.include_router(chat.router)

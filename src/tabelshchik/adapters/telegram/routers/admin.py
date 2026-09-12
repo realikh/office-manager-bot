@@ -7,17 +7,16 @@ a permission check you have to remember to write is one you will eventually forg
 from __future__ import annotations
 
 import html
-from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 
-from aiogram import BaseMiddleware, Bot, F, Router
+from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, TelegramObject
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from tabelshchik.adapters.reports.xlsx import build_workbook, schedule_caption
 from tabelshchik.adapters.telegram.commands import publish_for
@@ -40,6 +39,7 @@ from tabelshchik.adapters.telegram.keyboards import (
     office_settings_menu,
     weekday_picker,
 )
+from tabelshchik.adapters.telegram.middlewares import AdminOnly
 from tabelshchik.application import manage_admins, manage_offices, manage_roster
 from tabelshchik.application.build_report import ReportDay, build_report
 from tabelshchik.application.context import BotContext
@@ -151,26 +151,6 @@ async def _refused_a_command(message: Message) -> bool:
         return False
     await message.answer(COMMAND_IN_FLOW, reply_markup=cancel_keyboard())
     return True
-
-
-class AdminOnly(BaseMiddleware):
-    """One gate for the whole area.
-
-    A non-admin gets silence rather than a refusal: the admin surface is not something
-    to advertise to a group chat.
-    """
-
-    async def __call__(
-        self,
-        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
-        event: TelegramObject,
-        data: dict[str, Any],
-    ) -> Any:
-        services: BotContext = data["services"]
-        user = data.get("event_from_user")
-        if user is None or not services.is_admin(user.id):
-            return None
-        return await handler(event, data)
 
 
 router.message.middleware(AdminOnly())

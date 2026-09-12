@@ -75,7 +75,7 @@ def test_the_dispatcher_builds_with_the_routers_in_order(services) -> None:
     dispatcher = create_dispatcher(services)
     names = [router.name for router in dispatcher.sub_routers]
 
-    assert names == ["common", "admin", "employee", "chat"]
+    assert names == ["common", "admin", "bind", "employee", "chat"]
     assert names[-1] == "chat"
 
 
