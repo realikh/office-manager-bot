@@ -212,9 +212,9 @@ async def _render_roster(
         tail=decoration.tail,
     )
 
-    emojis = voice.emojis(mood, office_id=office_id, day=today, count=len(ordered))
     rows = [
-        f"{emojis[index]} {decoration.epithets[index]} {_mention_line(employees, employee_id)}"
+        f"{decoration.emojis[index]} {decoration.epithets[index]} "
+        f"{_mention_line(employees, employee_id)}"
         for index, employee_id in enumerate(ordered)
     ]
     return "{intro}\n\n{body}".format(intro=intro, body="\n".join(rows))

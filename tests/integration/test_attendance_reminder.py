@@ -332,8 +332,11 @@ async def test_a_dry_run_renders_without_sending_or_freezing(office) -> None:
 # --------------------------------------------------------------------------- voice
 
 
-def decoration(tail: str, epithets: list[str]) -> str:
-    return json.dumps({"tail": tail, "epithets": epithets}, ensure_ascii=False)
+def decoration(tail: str, epithets: list[str], emojis: list[str] | None = None) -> str:
+    payload: dict[str, object] = {"tail": tail, "epithets": epithets}
+    if emojis is not None:
+        payload["emojis"] = emojis
+    return json.dumps(payload, ensure_ascii=False)
 
 
 async def test_the_ai_flavoured_intro_is_used_when_it_is_valid(office) -> None:
@@ -458,3 +461,74 @@ async def test_an_office_with_its_own_chat_gets_no_header(office) -> None:
     notifier = RecordingNotifier()
     await remind(office, at(MONDAY), notifier)
     assert not notifier.last_text.startswith("🏢")
+
+
+# ------------------------------------------------------------------------ the icons
+
+
+async def test_the_model_picks_the_icon_that_goes_with_the_title(office) -> None:
+    """The point of asking for them at all.
+
+    The icon used to be dealt from a pool seeded on the office and the day, so it had
+    nothing to do with the title beside it — ☕ never reached «Кофейный гений» — and two
+    renders of the same day produced different titles under identical icons.
+    """
+    model = StubChatModel(
+        reply=decoration("кофе стынет", ["Кофейный гений", "Второй"], ["☕", "🗺"])
+    )
+    notifier = RecordingNotifier()
+
+    await remind(office, at(MONDAY), notifier, model=model)
+
+    assert "☕ Кофейный гений" in notifier.last_text
+    assert "🗺 Второй" in notifier.last_text
+
+
+async def test_an_icon_outside_the_allowlist_falls_back_to_the_pool(office) -> None:
+    """A work chat is not the place to discover what a model thinks is appropriate."""
+    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"], ["💀", "🍆"]))
+    notifier = RecordingNotifier()
+
+    await remind(office, at(MONDAY), notifier, model=model)
+
+    assert "💀" not in notifier.last_text
+    assert "🍆" not in notifier.last_text
+    assert "Первый" in notifier.last_text
+
+
+async def test_a_bad_icon_costs_only_its_own_slot(office) -> None:
+    """Per slot, like the titles: one bad answer should not throw away a good one."""
+    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"], ["☕", "💀"]))
+    notifier = RecordingNotifier()
+
+    await remind(office, at(MONDAY), notifier, model=model)
+
+    assert "☕ Первый" in notifier.last_text
+    assert "💀" not in notifier.last_text
+
+
+async def test_no_icons_at_all_still_reminds_everybody(office) -> None:
+    """Decoration is optional; being reminded is not."""
+    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"]))
+    notifier = RecordingNotifier()
+
+    await remind(office, at(MONDAY), notifier, model=model)
+
+    assert "Первый" in notifier.last_text
+    assert "Второй" in notifier.last_text
+
+
+async def test_every_curated_icon_is_one_the_model_may_also_use() -> None:
+    """The pools are the icons somebody decided were fine for a work chat.
+
+    If the allowlist did not cover them, the fallback could print something the guard
+    would have rejected from the model — the same icon judged two different ways.
+    """
+    import yaml
+
+    from tabelshchik.application.voice import render_emoji
+
+    pools = yaml.safe_load(Path("config/messages.yaml").read_text("utf-8"))
+    for mood, icons in pools["attendance"]["emojis"].items():
+        rejected = [icon for icon in icons if render_emoji(icon) is None]
+        assert not rejected, f"{mood} pool has icons the guard would refuse: {rejected}"

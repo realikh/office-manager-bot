@@ -9,6 +9,7 @@ import pytest
 
 from tabelshchik.application.ports import Completion
 from tabelshchik.application.voice import (
+    SAFE_EMOJI,
     Catalog,
     CommonText,
     MoodPolicy,
@@ -17,6 +18,7 @@ from tabelshchik.application.voice import (
     format_long_date,
     lead_in,
     render_days,
+    render_emoji,
     render_epithet,
     render_tail,
     render_template,
@@ -454,3 +456,40 @@ async def test_every_mood_produces_usable_text_without_a_model() -> None:
         result = await decorate(None, mood=mood)
         assert result.tail == f"[запасной-{mood.value}]."
         assert result.epithets == (f"[{mood.value}-м]", f"[{mood.value}-ж]")
+
+
+# ---------------------------------------------------------------------- emoji guard
+
+
+def test_an_emoji_from_the_allowlist_is_kept() -> None:
+    assert render_emoji("☕") == "☕"
+    assert render_emoji(" 🚗 ") == "🚗"
+
+
+def test_a_variation_selector_is_trimmed_rather_than_refused() -> None:
+    """Models append U+FE0F freely and it renders identically; refusing it would send
+    perfectly good answers to the fallback for an invisible reason."""
+    assert render_emoji("☕️") == "☕"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "💀",  # not in the allowlist
+        "🍆",  # nor this, for reasons a work chat should not have to discover
+        "🇰🇿",  # a flag: two codepoints, and a political statement in some rooms
+        "👍🏽",  # a skin-tone modifier, which is not ours to assign to somebody
+        "☕☕",  # two is not one
+        "abc",
+        "",
+        "   ",
+    ],
+)
+def test_anything_else_is_refused_so_the_caller_can_fall_back(raw: str) -> None:
+    assert render_emoji(raw) is None
+
+
+def test_the_allowlist_holds_single_codepoints_only() -> None:
+    """Membership is an exact string match, so a multi-codepoint entry would be
+    unreachable — present in the list and never matching anything."""
+    assert all(len(icon) == 1 for icon in SAFE_EMOJI)

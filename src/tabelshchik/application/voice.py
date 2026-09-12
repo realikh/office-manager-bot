@@ -134,13 +134,15 @@ class MoodPolicy:
 class Decoration:
     """What the model contributed to one reminder: a clause, and one title per person.
 
-    ``epithets`` is always exactly as long as the roster. Slots the model did not fill, or
-    filled badly, hold a hand-written title instead — so the roster loop never has to ask
-    whether the AI worked.
+    ``epithets`` and ``emojis`` are always exactly as long as the roster. Slots the model
+    did not fill, or filled badly, hold a hand-written title and an icon from the mood's
+    own pool instead — so the roster loop never has to ask whether the AI worked.
     """
 
     tail: str
     epithets: tuple[str, ...]
+    #: One per person, same length and the same per-slot fallback rule as `epithets`.
+    emojis: tuple[str, ...] = ()
 
 
 def office_header(office_name: str, common: CommonText) -> str:
@@ -234,6 +236,49 @@ def _as_sentence(line: str) -> str:
     if line[0].islower():
         line = line[0].upper() + line[1:]
     return line if line[-1] in _SENTENCE_END else line + "."
+
+
+#: What the model may put in front of a name. An allowlist, not a pattern check: an
+#: emoji that matches its title is the whole point, but a work chat is not the place to
+#: discover what a model considers appropriate. Grouped by what a title might be about,
+#: which is also how the prompt presents them.
+SAFE_EMOJI: frozenset[str] = frozenset(
+    # Coffee, food, the morning
+    "☕🍵🧋🍩🥐🥪🍫🧃🍪"
+    # The road in
+    "🚗🚕🚌🚲🛴🗺🧭🚦🛣🚇"
+    # Work, desks, meetings
+    "💻⌨🖥📊📈📋📌📎🗂🖇📅🗓⏰⌛🔔🤝"
+    # Weather and the sky
+    "🌞🌤⛅🌧🌫❄🌈⭐🌟✨🌙"
+    # Standing firm
+    "🛡⚔🏰🧱🗿⚓🔩🧲"
+    # Energy and celebration
+    "⚡🔥🚀🎉🎯🎲🏆🥇🎪🎨🎸"
+    # Nature, quiet things
+    "🌱🌳🍀🌵🪴🐝🦉🐢🦫"
+    # For the moods that are not cheerful. The pools already use these, and the model
+    # should be able to reach for them when the persona is sad or depressive.
+    "🫠🕳📉⏳🕯🧊🪫"
+    # Odds and ends a title might reach for
+    "🔧🔑🧩🔍💡📖🧠🎩🪄🧭"
+)
+
+MAX_EMOJI_LENGTH = 4
+
+
+def render_emoji(raw: str) -> str | None:
+    """One emoji from the allowlist, or None so the caller can fall back.
+
+    Length is checked before membership because a variation selector or a skin-tone
+    modifier makes a string that looks like one character and is not the one we allow.
+    """
+    text = raw.strip()
+    if not text or len(text) > MAX_EMOJI_LENGTH:
+        return None
+    # Trim the variation selector some models append; ️ renders identically.
+    stripped = text.replace("\ufe0f", "")
+    return stripped if stripped in SAFE_EMOJI else None
 
 
 def render_epithet(
@@ -530,6 +575,7 @@ class Voice:
                 self.fallback_epithet(mood, gender, office_id=office_id, day=day, nonce=index)
                 for index, gender in enumerate(genders)
             ),
+            emojis=self.emojis(mood, office_id=office_id, day=day, count=len(genders)),
         )
 
         persona = self.catalog.line("ai.persona", mood)
@@ -579,7 +625,15 @@ class Voice:
             _offered(offered, index, gender, clean_epithet) or fallback.epithets[index]
             for index, gender in enumerate(genders)
         )
-        return Decoration(tail=tail, epithets=epithets)
+
+        raw_emojis = payload.get("emojis")
+        icons = raw_emojis if isinstance(raw_emojis, list) else []
+        emojis = tuple(
+            _offered(icons, index, gender, lambda raw, _gender: render_emoji(raw))
+            or fallback.emojis[index]
+            for index, gender in enumerate(genders)
+        )
+        return Decoration(tail=tail, epithets=epithets, emojis=emojis)
 
     def _static_tail(self, mood: Mood, *, office_id: str, day: date) -> str:
         line = self.catalog.variant("attendance.tails", mood, office_id=office_id, day=day)
@@ -614,13 +668,17 @@ def _decoration_system_prompt(persona: str) -> str:
         "Ты оформляешь ежедневное напоминание о выходе в офис. Даты, имена и название "
         "офиса подставляются автоматически — тебе их не сообщают и упоминать их нельзя.\n"
         "Верни СТРОГО JSON вида: "
-        '{"tail": "...", "epithets": ["...", "..."]}\n'
+        '{"tail": "...", "epithets": ["...", "..."], "emojis": ["...", "..."]}\n'
         "tail — одна короткая фраза (3–12 слов) в твоём настроении. Она встанет в конец "
         "вступительной строки.\n"
         "epithets — шуточные титулы по 1–3 слова, ровно столько же, сколько указано, "
         "и строго в том же порядке и роде.\n"
-        "Запрещено везде: числа и цифры, даты, дни недели, месяцы, названия офисов, "
-        "имена людей, @упоминания, эмодзи, разметка, капслок.\n"
+        "emojis — по одному эмодзи на каждый титул, в том же порядке, ПО СМЫСЛУ титула: "
+        "про кофе — кофейное, про дорогу — дорожное, про стойкость — щит или крепость. "
+        "Выбирай только из этого списка, по одному символу, не повторяясь:\n"
+        f"{' '.join(sorted(SAFE_EMOJI))}\n"
+        "Запрещено в tail и epithets: числа и цифры, даты, дни недели, месяцы, названия "
+        "офисов, имена людей, @упоминания, эмодзи, разметка, капслок.\n"
         "Титулы — только доброжелательно-шуточные: про стойкость, кофе, дорогу, "
         "переговорки. Никогда про внешность, компетентность, здоровье или личную жизнь."
     )

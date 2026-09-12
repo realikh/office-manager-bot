@@ -59,11 +59,16 @@ unintended.
 `Voice.decorate()` makes **one** request returning JSON:
 
 ```json
-{"tail": "кофемашина уже нервничает", "epithets": ["Несгибаемый защитник", "Душа компании"]}
+{
+  "tail": "кофемашина уже нервничает",
+  "epithets": ["Несгибаемый защитник", "Душа компании"],
+  "emojis": ["🛡", "🎉"]
+}
 ```
 
 The model is told only how many epithets are needed and what gender each must be
-(`1) мужской род, 2) женский род`). It is never sent the names.
+(`1) мужской род, 2) женский род`), plus the emoji it may choose from. It is never sent
+the names.
 
 Then:
 
@@ -71,8 +76,21 @@ Then:
 - Each epithet runs through `render_epithet` **independently**. Rejected → the written
   per-mood, per-gender epithet for that slot. A model that titles one person well and
   fumbles the next costs only the second title.
-- Emoji are ours, never the model's, picked by shuffling the pool with a stable hash so
-  they do not repeat inside one message.
+- Each emoji runs through `render_emoji`, which is an **allowlist** (`SAFE_EMOJI`, about
+  ninety icons) rather than a pattern check. Rejected → the mood's own pool for that slot,
+  shuffled with a stable hash so icons do not repeat inside one message.
+
+  Asking the model for the icon is what makes it mean something: ☕ goes to «Кофейный
+  гений» and 🗺 to «Планировщик маршрутов». Before, the icon was dealt from a pool seeded
+  on the office and the day, so it had nothing to do with the title beside it — and two
+  renders of the same day produced different titles under identical icons, which is what
+  made the icons look hardcoded.
+
+  An allowlist rather than "is this an emoji": a work chat is not the place to find out
+  what a model considers appropriate. It refuses flags (a political statement in some
+  rooms), skin-tone modifiers (not ours to assign to somebody), and anything not on the
+  list. Every curated pool icon is on it, so the same icon is never judged two ways —
+  there is a test for that.
 
 The rendered line loop is over `snapshot.roster`. **Decoration is optional; being
 reminded is not.** With the model off, broken or out of credit, everyone scheduled still
@@ -95,6 +113,7 @@ strict.
 | Banned terms | `personality.bannedTerms` |
 | Shouting (>60% caps, 12+ letters) | A model having a moment |
 | Gender agreement (epithets) | *"Мужик"* in front of a woman's name |
+| Allowlist (emojis) | A flag, a skin tone, or whatever else the model reached for |
 
 ### Stem matching, carefully
 
@@ -218,7 +237,7 @@ Four layers, all silent. The written corpus is the floor on quality.
 2. **Empty persona for the mood** → written text.
 3. **Model returned nothing** (network, 4xx, retries exhausted) → written text; chat
    answers an `ai.failed` variant.
-4. **Guards rejected it** → written text, per slot for epithets.
+4. **Guards rejected it** → written text, per slot for epithets and per slot for emoji.
 
 Plus: over the daily allowance → an `ai.rateLimited` variant. The allowance is per
 person, and either the default or one person's own number can be changed from `/admin`
