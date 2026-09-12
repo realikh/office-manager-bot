@@ -10,9 +10,11 @@ to admins, so it does not advertise itself in a group of twenty people who canno
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Iterable
 
 from aiogram import Bot
+from aiogram.exceptions import TelegramAPIError
 from aiogram.types import (
     BotCommand,
     BotCommandScopeAllGroupChats,
@@ -35,6 +37,8 @@ GROUP: tuple[tuple[str, str], ...] = (("help", "Справка"),)
 
 ADMIN_ONLY: tuple[tuple[str, str], ...] = (("admin", "Режим администратора"),)
 
+logger = logging.getLogger(__name__)
+
 
 def _commands(pairs: Iterable[tuple[str, str]]) -> list[BotCommand]:
     return [BotCommand(command=name, description=text) for name, text in pairs]
@@ -52,3 +56,29 @@ async def publish_commands(bot: Bot, *, admin_ids: Iterable[int] = ()) -> None:
             _commands((*PRIVATE, *ADMIN_ONLY)),
             scope=BotCommandScopeChat(chat_id=admin_id),
         )
+
+
+async def publish_for(bot: Bot, user_id: int, *, admin: bool) -> None:
+    """Update one person's private command menu, without waiting for a restart.
+
+    `publish_commands` writes the per-chat scopes once, at boot, so a freshly promoted
+    admin had no `/admin` entry until the next deploy — which is most of what "adminship
+    moved out of the environment" was supposed to fix.
+
+    Demoting *deletes* the override rather than rewriting it, so the all-private-chats
+    scope applies to them again.
+
+    Best effort on purpose. Telegram refuses a chat scope for somebody who has never
+    messaged the bot, and failing a grant over a cosmetic menu would be the wrong trade —
+    `AdminOnly` is the real gate, this is only what the person sees in their menu.
+    """
+    try:
+        if admin:
+            await bot.set_my_commands(
+                _commands((*PRIVATE, *ADMIN_ONLY)),
+                scope=BotCommandScopeChat(chat_id=user_id),
+            )
+        else:
+            await bot.delete_my_commands(scope=BotCommandScopeChat(chat_id=user_id))
+    except TelegramAPIError as error:
+        logger.warning("could not update the command menu for %s: %s", user_id, error)

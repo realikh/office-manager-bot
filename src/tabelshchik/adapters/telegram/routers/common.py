@@ -116,7 +116,10 @@ async def help_command(message: Message, services: BotContext) -> None:
 async def menu(message: Message, services: BotContext) -> None:
     """Private only. The menu leads to screens that name other people, and a keyboard
     handed out in a group is one tap away from publishing the roster there."""
-    if services.is_admin(message.from_user.id if message.from_user else None):
-        await message.answer("Меню администратора:", reply_markup=main_menu())
+    user_id = message.from_user.id if message.from_user else None
+    if services.is_admin(user_id):
+        await message.answer(
+            "Меню администратора:", reply_markup=main_menu(owner=services.is_owner(user_id))
+        )
         return
     await message.answer("Меню:", reply_markup=employee_menu())

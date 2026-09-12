@@ -21,12 +21,48 @@ def button(text: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=data)
 
 
-def main_menu() -> InlineKeyboardMarkup:
-    return keyboard(
+def main_menu(*, owner: bool = False) -> InlineKeyboardMarkup:
+    """The admin menu. `owner` defaults to False so a forgotten argument fails closed."""
+    rows = [
         (button("🏢 Офисы", "adm:offices"),),
         (button("⚖️ Справедливость", "adm:fair"), button("🎭 Настроение", "adm:mood")),
         (button("📊 Состояние", "adm:status"), button("⚙️ Конфиг", "adm:config")),
         (button("💾 Резервная копия", "adm:backup"),),
+    ]
+    if owner:
+        rows.append((button("👑 Администраторы", "adm:admins"),))
+    return keyboard(*rows)
+
+
+def admin_list(entries: Sequence[tuple[int, str]], *, owner: bool) -> InlineKeyboardMarkup:
+    rows = [(button(label, f"adm:admv:{user_id}"),) for user_id, label in entries]
+    if owner:
+        rows.append((button("➕ Добавить", "adm:admadd"),))
+    return keyboard(*rows, (button("‹ Назад", "adm:menu"),))
+
+
+def admin_card(user_id: int, *, owner: bool, is_owner: bool, is_self: bool) -> InlineKeyboardMarkup:
+    """The owner's own card offers nothing: ownership is transferred away, not dropped."""
+    rows = []
+    if owner and not is_owner:
+        rows.append((button("👑 Передать владение", f"adm:admown:{user_id}"),))
+    if not is_owner and (owner or is_self):
+        label = "🚪 Убрать себя" if is_self else "🚪 Разжаловать"
+        rows.append((button(label, f"adm:admdel:{user_id}"),))
+    return keyboard(*rows, (button("‹ Назад", "adm:admins"),))
+
+
+def grant_picker(entries: Sequence[tuple[int, str]]) -> InlineKeyboardMarkup:
+    """People the bot already knows, plus a way to type an id.
+
+    The Bot API cannot turn a @username into a user id, so somebody who has linked their
+    account is the only person who can be picked rather than typed.
+    """
+    rows = [(button(label, f"adm:admpick:{user_id}"),) for user_id, label in entries]
+    return keyboard(
+        *rows,
+        (button("✍️ Ввести id", "adm:admid"),),
+        (button("‹ Назад", "adm:admins"),),
     )
 
 

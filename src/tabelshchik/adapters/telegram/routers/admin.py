@@ -11,7 +11,7 @@ from collections.abc import Awaitable, Callable
 from datetime import timedelta
 from typing import Any
 
-from aiogram import BaseMiddleware, F, Router
+from aiogram import BaseMiddleware, Bot, F, Router
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
@@ -20,22 +20,27 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message, TelegramObject
 
 from tabelshchik.adapters.reports.xlsx import build_workbook, schedule_caption
+from tabelshchik.adapters.telegram.commands import publish_for
 from tabelshchik.adapters.telegram.keyboards import (
     WEEKDAY_LABELS,
+    admin_card,
+    admin_list,
     cancel_keyboard,
     confirm,
     employee_card,
     employee_list,
     gender_picker,
+    grant_picker,
     keyboard,
     main_menu,
     office_list,
     office_menu,
     weekday_picker,
 )
-from tabelshchik.application import manage_roster
+from tabelshchik.application import manage_admins, manage_roster
 from tabelshchik.application.build_report import ReportDay, build_report
 from tabelshchik.application.context import BotContext
+from tabelshchik.application.manage_admins import AdminError
 from tabelshchik.application.manage_roster import RosterError
 from tabelshchik.application.regenerate_schedule import regenerate
 from tabelshchik.application.send_attendance_reminder import send_attendance_reminder
@@ -60,6 +65,10 @@ class EditEmployee(StatesGroup):
     waiting_for_username = State()
 
 
+class GrantAdmin(StatesGroup):
+    waiting_for_user_id = State()
+
+
 SKIP = "-"
 
 #: Sanity bound on a typed desk count. There is no schema maximum, and a fat-fingered
@@ -77,26 +86,34 @@ _IN_A_FLOW = (
     AddEmployee.waiting_for_gender,
     EditEmployee.waiting_for_name,
     EditEmployee.waiting_for_username,
+    GrantAdmin.waiting_for_user_id,
 )
 
 COMMAND_IN_FLOW = "Это похоже на команду. Отправьте значение или нажмите «Отмена»."
+NOT_THE_OWNER = "Это может только владелец."
+GRANT_HINT = "Если пункт /admin не появился, попросите человека написать боту /start."
 
 
 @router.message(Command("cancel"), StateFilter(*_IN_A_FLOW))
-async def cancel_admin_flow(message: Message, state: FSMContext) -> None:
+async def cancel_admin_flow(message: Message, state: FSMContext, services: BotContext) -> None:
     """Admin mode needs its own cancel.
 
     This router is registered before the employee one, but the only `/cancel` used to live
     there — so cancelling a half-finished admin wizard answered with the *employee* menu.
     """
     await state.clear()
-    await message.answer("Отменено.", reply_markup=main_menu())
+    await message.answer("Отменено.", reply_markup=main_menu(owner=_is_owner(services, message)))
 
 
 @router.callback_query(F.data == "adm:cancel")
-async def cancel_button(query: CallbackQuery, state: FSMContext) -> None:
+async def cancel_button(query: CallbackQuery, state: FSMContext, services: BotContext) -> None:
     await state.clear()
-    await _replace(query, "Отменено.", main_menu())
+    await _replace(query, "Отменено.", main_menu(owner=_is_owner(services, query)))
+
+
+def _is_owner(services: BotContext, event: Message | CallbackQuery) -> bool:
+    """Whether the person who sent this may see the owner-only rows."""
+    return services.is_owner(event.from_user.id if event.from_user else None)
 
 
 async def _refused_a_command(message: Message) -> bool:
@@ -144,13 +161,15 @@ router.callback_query.filter(F.message.chat.type == ChatType.PRIVATE)
 
 
 @router.message(Command("admin"))
-async def admin_menu(message: Message) -> None:
-    await message.answer("Режим администратора:", reply_markup=main_menu())
+async def admin_menu(message: Message, services: BotContext) -> None:
+    await message.answer(
+        "Режим администратора:", reply_markup=main_menu(owner=_is_owner(services, message))
+    )
 
 
 @router.callback_query(F.data == "adm:menu")
-async def back(query: CallbackQuery) -> None:
-    await _replace(query, "Режим администратора:", main_menu())
+async def back(query: CallbackQuery, services: BotContext) -> None:
+    await _replace(query, "Режим администратора:", main_menu(owner=_is_owner(services, query)))
 
 
 @router.callback_query(F.data == "adm:offices")
@@ -830,6 +849,185 @@ async def _send_workbook(
     )
 
 
+# ----------------------------------------------------------------------------- admins
+#
+# Owner-only, twice over. These handlers hide the buttons, and `manage_admins` refuses
+# the call anyway: a hidden button is not a permission — a demoted admin still has the
+# old screen open on their phone, and the free-text step carries no callback data at all.
+
+
+@router.callback_query(F.data == "adm:admins")
+async def admins(query: CallbackQuery, services: BotContext) -> None:
+    if not _is_owner(services, query):
+        await query.answer(NOT_THE_OWNER, show_alert=True)
+        return
+    await _replace(query, *admins_screen(services, viewer_id=query.from_user.id))
+
+
+@router.callback_query(F.data.startswith("adm:admv:"))
+async def admin_card_view(query: CallbackQuery, services: BotContext) -> None:
+    screen = admin_card_screen(services, int(_tail(query)), viewer_id=query.from_user.id)
+    if screen is None:
+        await query.answer("Администратор не найден", show_alert=True)
+        return
+    await _replace(query, *screen)
+
+
+@router.callback_query(F.data == "adm:admadd")
+async def start_granting(query: CallbackQuery, services: BotContext) -> None:
+    if not _is_owner(services, query):
+        await query.answer(NOT_THE_OWNER, show_alert=True)
+        return
+    await _replace(query, *grant_screen(services))
+
+
+@router.callback_query(F.data.startswith("adm:admpick:"))
+async def grant_to_employee(query: CallbackQuery, services: BotContext, bot: Bot) -> None:
+    # The button carries the *Telegram* id, because that is what adminship is keyed on.
+    # The roster is asked only for a name to show in the list. Reading it as an employee
+    # id finds nobody, and reports that the person has not linked their account.
+    user_id = int(_tail(query))
+    employee = services.offices.find_employee_by_user_id(user_id)
+    await _grant(
+        query, services, bot, user_id=user_id, label=employee.full_name if employee else ""
+    )
+
+
+@router.callback_query(F.data == "adm:admid")
+async def start_typing_an_id(query: CallbackQuery, services: BotContext, state: FSMContext) -> None:
+    if not _is_owner(services, query):
+        await query.answer(NOT_THE_OWNER, show_alert=True)
+        return
+    await query.answer()
+    await state.set_state(GrantAdmin.waiting_for_user_id)
+    if isinstance(query.message, Message):
+        await query.message.answer(
+            "Отправьте числовой Telegram id — его подскажет @userinfobot. "
+            "Это нужно только тем, кого нет ни в одном офисе.",
+            reply_markup=cancel_keyboard(),
+        )
+
+
+@router.message(GrantAdmin.waiting_for_user_id)
+async def apply_typed_id(
+    message: Message, state: FSMContext, services: BotContext, bot: Bot
+) -> None:
+    if await _refused_a_command(message):
+        return
+    raw = (message.text or "").strip()
+    if not raw.lstrip("-").isdecimal():
+        await message.answer("Нужно число. Попробуйте ещё раз.", reply_markup=cancel_keyboard())
+        return
+
+    await state.clear()
+    actor_id = message.from_user.id if message.from_user else 0
+    try:
+        manage_admins.grant(
+            user_id=int(raw),
+            actor_id=actor_id,
+            admins=services.admins,
+            clock=services.clock,
+            audit=services.audit,
+        )
+    except AdminError as error:
+        await message.answer(str(error), reply_markup=main_menu(owner=_is_owner(services, message)))
+        return
+
+    await publish_for(bot, int(raw), admin=True)
+    text, markup = admins_screen(services, viewer_id=actor_id)
+    await message.answer(f"Готово. {GRANT_HINT}\n\n{text}", reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("adm:admdel:"))
+async def confirm_revoking(query: CallbackQuery, services: BotContext) -> None:
+    user_id = int(_tail(query))
+    if not (_is_owner(services, query) or user_id == query.from_user.id):
+        await query.answer(NOT_THE_OWNER, show_alert=True)
+        return
+    question = (
+        "Убрать себя из администраторов? Вернуть права сможет только владелец."
+        if user_id == query.from_user.id
+        else f"Разжаловать <code>{user_id}</code>?"
+    )
+    await _replace(query, question, confirm(f"adm:admdelgo:{user_id}", back=f"adm:admv:{user_id}"))
+
+
+@router.callback_query(F.data.startswith("adm:admdelgo:"))
+async def revoke_admin(query: CallbackQuery, services: BotContext, bot: Bot) -> None:
+    user_id = int(_tail(query))
+    try:
+        manage_admins.revoke(
+            user_id=user_id,
+            actor_id=query.from_user.id,
+            admins=services.admins,
+            audit=services.audit,
+        )
+    except AdminError as error:
+        await query.answer(str(error), show_alert=True)
+        return
+
+    await publish_for(bot, user_id, admin=False)
+    if user_id == query.from_user.id:
+        # They have just removed their own access; there is no admin screen to go back to,
+        # and an empty keyboard is a markup Telegram will reject. Drop it entirely.
+        await _replace(query, "Готово. Вы больше не администратор.", None)
+        return
+    await _replace(query, *admins_screen(services, viewer_id=query.from_user.id))
+
+
+@router.callback_query(F.data.startswith("adm:admown:"))
+async def confirm_transfer(query: CallbackQuery, services: BotContext) -> None:
+    if not _is_owner(services, query):
+        await query.answer(NOT_THE_OWNER, show_alert=True)
+        return
+    user_id = int(_tail(query))
+    await _replace(
+        query,
+        f"Передать владение <code>{user_id}</code>?\n\n"
+        "Вы станете обычным администратором и больше не сможете выдавать права "
+        "или создавать офисы. Вернуть владение сможет только новый владелец.",
+        confirm(f"adm:admowngo:{user_id}", back=f"adm:admv:{user_id}"),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:admowngo:"))
+async def transfer_ownership(query: CallbackQuery, services: BotContext) -> None:
+    try:
+        manage_admins.transfer_ownership(
+            user_id=int(_tail(query)),
+            actor_id=query.from_user.id,
+            admins=services.admins,
+            clock=services.clock,
+            audit=services.audit,
+        )
+    except AdminError as error:
+        await query.answer(str(error), show_alert=True)
+        return
+    await _replace(query, *admins_screen(services, viewer_id=query.from_user.id))
+
+
+async def _grant(
+    query: CallbackQuery, services: BotContext, bot: Bot, *, user_id: int, label: str
+) -> None:
+    try:
+        manage_admins.grant(
+            user_id=user_id,
+            label=label,
+            actor_id=query.from_user.id,
+            admins=services.admins,
+            clock=services.clock,
+            audit=services.audit,
+        )
+    except AdminError as error:
+        await query.answer(str(error), show_alert=True)
+        return
+
+    # Their `/admin` entry appears now rather than at the next deploy, which is most of
+    # what moving adminship out of the environment was for.
+    await publish_for(bot, user_id, admin=True)
+    await _replace(query, *admins_screen(services, viewer_id=query.from_user.id))
+
+
 # ---------------------------------------------------------------------------- screens
 #
 # Each returns the text and keyboard for one screen from *explicit* arguments. Handlers
@@ -937,6 +1135,82 @@ def _parse_count(raw: str) -> int | None:
 def _context(services: BotContext, office_id: str):  # type: ignore[no-untyped-def]
     today = services.clock.today()
     return services.offices.planning_context(office_id, start=today, end=today)
+
+
+def admins_screen(services: BotContext, *, viewer_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """The count in the text is load-bearing.
+
+    Telegram refuses to redraw a message whose text and markup are both unchanged, and
+    revoking the last admin in the list changes only the keyboard.
+    """
+    entries, owner = _admin_entries(services, viewer_id=viewer_id)
+    return (
+        f"<b>Администраторы</b> — {len(entries)}\n\n"
+        "👑 — владелец: только он выдаёт права и создаёт офисы.\n"
+        "Владение передаётся, а не снимается.",
+        admin_list(entries, owner=owner),
+    )
+
+
+def admin_card_screen(
+    services: BotContext, user_id: int, *, viewer_id: int
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    record = next((item for item in services.admins.listing() if item.user_id == user_id), None)
+    if record is None:
+        return None
+
+    name = html.escape(record.label) if record.label else "без имени"
+    granted = record.granted_at.date().isoformat() if record.granted_at else "—"
+    return (
+        f"{'👑' if record.is_owner else '🛡'} <b>{name}</b>\n"
+        f"Id: <code>{record.user_id}</code>\n"
+        f"Права с: {granted}",
+        admin_card(
+            record.user_id,
+            owner=services.is_owner(viewer_id),
+            is_owner=record.is_owner,
+            is_self=record.user_id == viewer_id,
+        ),
+    )
+
+
+def grant_screen(services: BotContext) -> tuple[str, InlineKeyboardMarkup]:
+    """Only people the bot already knows can be picked.
+
+    The Bot API cannot turn a @username into a user id, so somebody who has never sent
+    `/start` has to be typed in by number.
+    """
+    today = services.clock.today()
+    taken = services.admins.ids()
+
+    entries = []
+    for office in services.offices.all_offices():
+        for employee in sorted(
+            services.offices.employees(office.id), key=lambda e: e.full_name.casefold()
+        ):
+            if (
+                employee.telegram_user_id is not None
+                and employee.telegram_user_id not in taken
+                and employee.in_tenure(today)
+            ):
+                entries.append((employee.telegram_user_id, employee.full_name))
+
+    return (
+        f"Кого сделать администратором? Привязанных сотрудников: {len(entries)}.",
+        grant_picker(entries),
+    )
+
+
+def _admin_entries(services: BotContext, *, viewer_id: int) -> tuple[list[tuple[int, str]], bool]:
+    entries = [
+        (
+            record.user_id,
+            f"{'👑' if record.is_owner else '🛡'} {record.label or record.user_id}"
+            + (" · вы" if record.user_id == viewer_id else ""),
+        )
+        for record in services.admins.listing()
+    ]
+    return entries, services.is_owner(viewer_id)
 
 
 def _tail(query: CallbackQuery) -> str:
