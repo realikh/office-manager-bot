@@ -36,6 +36,7 @@ from tabelshchik.application.ports import (
     OfficeStore,
     RosterStore,
     ScheduleStore,
+    SettingsStore,
     UsageStore,
 )
 from tabelshchik.application.voice import Voice
@@ -54,6 +55,7 @@ class BotContext(Protocol):
 
     offices: OfficeStore
     admins: AdminStore
+    settings: SettingsStore
     office_admin: OfficeAdminStore
     #: None in tests and in CLI commands, where no scheduler is running. Every call site
     #: guards for it rather than assuming the bot is up.

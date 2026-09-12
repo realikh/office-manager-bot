@@ -128,6 +128,9 @@ class Employee(Base):
     started_on: Mapped[date | None] = mapped_column(Date, default=None)
     #: Inclusive last working day.
     ended_on: Mapped[date | None] = mapped_column(Date, default=None)
+    #: Per-person AI allowance. NULL means the configured default rather than zero, so
+    #: changing the default moves everybody who has not been singled out.
+    ai_daily_limit: Mapped[int | None] = mapped_column(Integer, default=None)
 
     office: Mapped[Office] = relationship(back_populates="employees")
 
@@ -335,6 +338,21 @@ class AiUsage(Base):
     day: Mapped[date] = mapped_column(Date, primary_key=True)
     count: Mapped[int] = mapped_column(Integer, default=0)
     tokens: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class Setting(Base):
+    """The handful of numbers an admin may change without a deploy.
+
+    Deliberately narrow: integers only, and reached through named accessors on
+    `SettingsStore` rather than as a free-form bag. `app.yaml` still carries the defaults
+    and still refuses an unknown key — a row here is an override, and a missing row means
+    "whatever the file says", so nothing has to be migrated when a default changes.
+    """
+
+    __tablename__ = "setting"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[int] = mapped_column(Integer)
 
 
 class BotMood(Base):

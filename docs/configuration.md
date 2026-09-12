@@ -41,6 +41,38 @@ away every employee, assignment and ledger entry it ever had.
 `config/offices/` is git-ignored. If you keep local copies, they are a snapshot rather
 than a record — the database is the record, and the nightly backup is what protects it.
 
+## AI limits
+
+The daily AI allowance has always been per person: `ai_usage` is keyed on
+`(user_id, day)`, so ten a day means ten each, not ten between everybody. What was fixed
+was the *number* — the same for everyone, changeable only by editing `app.yaml` and
+deploying.
+
+Three things move it now, all from the bot:
+
+| | Where | Meaning |
+|---|---|---|
+| The default | `/admin` → 🤖 Лимиты ИИ | What everybody gets unless singled out |
+| One person's allowance | their card → 🤖 Лимит ИИ | Overrides the default for them alone |
+| The global cap | `/admin` → 🤖 Лимиты ИИ | Cost stop-loss across everybody, per day |
+
+`app.yaml` still carries the defaults, and a row in the `setting` table overrides one. A
+missing row means the file wins, so a default changed in a release reaches every
+deployment that has not deliberately moved away from it.
+
+An employee's override is `NULL` until somebody sets it, and that is deliberate:
+**raising the default lifts everybody who was never singled out.** Storing a copy of the
+current default on every employee would have frozen the roster at whatever the number
+happened to be, and made changing the default do nothing.
+
+Zero is a real answer — no AI replies for that person. "No limit of their own" is `NULL`,
+which the UI spells `-`.
+
+Worth knowing: the global cap bites before the per-person limits do. Raising everybody to
+thirty while the cap stays at two hundred means the bot goes quiet for the whole office
+once the cap is reached, which reads as a fault rather than as a budget — so the two live
+on the same screen.
+
 ## Adminship
 
 There is no `admins:` key. Admins live in the `admin` table, exactly one of them an
@@ -128,7 +160,7 @@ validators will refuse to boot otherwise.
 | `schedule` | `horizonWeeks` generated, `freezeWeeks` immutable (must be smaller, validated), `maxDaysPerWeek`, `absencePolicy`, `surplusClamp`. |
 | `retention` | `scheduleMonths` 3, `jobRunsDays`, `auditDays`, `aiUsageDays`, `chatMessagesDays`. |
 | `personality` | `moods` weights, `safeMode`, `bannedTerms`. |
-| `ai` | Model, sampling, daily limits, triggers, and `chat` context budgets. |
+| `ai` | Model, sampling, daily limits, triggers, and `chat` context budgets. The two limits are **defaults** — see below. |
 | `health` | `pingUrl` dead-man's switch, heartbeat file and staleness, `catchUpGraceHours`, `nightlyBackup`. |
 
 ### `offices/<id>.yaml`

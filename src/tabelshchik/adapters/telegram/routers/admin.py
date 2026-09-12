@@ -32,6 +32,7 @@ from tabelshchik.adapters.telegram.keyboards import (
     gender_picker,
     grant_picker,
     keyboard,
+    limits_menu,
     main_menu,
     office_list,
     office_menu,
@@ -40,10 +41,20 @@ from tabelshchik.adapters.telegram.keyboards import (
 )
 from tabelshchik.adapters.telegram.middlewares import AdminOnly
 from tabelshchik.adapters.telegram.ui import redraw, rehome
-from tabelshchik.application import manage_admins, manage_offices, manage_roster
+from tabelshchik.application import (
+    manage_admins,
+    manage_limits,
+    manage_offices,
+    manage_roster,
+)
 from tabelshchik.application.build_report import ReportDay, build_report
 from tabelshchik.application.context import BotContext
 from tabelshchik.application.manage_admins import AdminError
+from tabelshchik.application.manage_limits import (
+    MAX_DAILY_LIMIT,
+    MAX_GLOBAL_LIMIT,
+    LimitError,
+)
 from tabelshchik.application.manage_offices import OfficeError
 from tabelshchik.application.manage_roster import RosterError
 from tabelshchik.application.regenerate_schedule import regenerate
@@ -74,6 +85,10 @@ class GrantAdmin(StatesGroup):
     waiting_for_user_id = State()
 
 
+class SetLimit(StatesGroup):
+    waiting_for_value = State()
+
+
 class CreateOffice(StatesGroup):
     waiting_for_name = State()
 
@@ -102,6 +117,7 @@ _IN_A_FLOW = (
     EditEmployee.waiting_for_name,
     EditEmployee.waiting_for_username,
     GrantAdmin.waiting_for_user_id,
+    SetLimit.waiting_for_value,
     CreateOffice.waiting_for_name,
     EditOffice.waiting_for_name,
     EditOffice.waiting_for_chat_id,
@@ -226,6 +242,8 @@ def _return_screen(
         return offices_screen(services, owner=owner)
     if tag == "admins":
         return admins_screen(services, viewer_id=viewer_id)
+    if tag == "limits":
+        return limits_screen(services)
     if tag == "roster":
         return roster_screen(services, arg)
     if tag == "desks":
@@ -1334,6 +1352,109 @@ async def apply_deletion(message: Message, state: FSMContext, services: BotConte
     )
 
 
+# ------------------------------------------------------------------------- AI limits
+#
+# The allowance has always been per person; what is new is being able to move it. An
+# override is stored rather than a copy of the default, so raising the default lifts
+# everybody who was never singled out.
+
+
+@router.callback_query(F.data == "adm:limits")
+async def limits(query: CallbackQuery, services: BotContext) -> None:
+    await _replace(query, *limits_screen(services))
+
+
+@router.callback_query(F.data == "adm:limdef")
+async def start_setting_default(query: CallbackQuery, state: FSMContext) -> None:
+    await _ask(
+        query,
+        state,
+        SetLimit.waiting_for_value,
+        f"Сколько запросов к ИИ в день на человека? Отправьте число от 0 до "
+        f"{MAX_DAILY_LIMIT}, или «{SKIP}», чтобы вернуть значение из конфигурации.",
+        back_to="limits",
+        target="default",
+    )
+
+
+@router.callback_query(F.data == "adm:limcap")
+async def start_setting_cap(query: CallbackQuery, state: FSMContext) -> None:
+    await _ask(
+        query,
+        state,
+        SetLimit.waiting_for_value,
+        "Общий предел на все офисы за день — страховка от неожиданного счёта. "
+        f"Отправьте число от 0 до {MAX_GLOBAL_LIMIT}, или «{SKIP}» для значения "
+        "из конфигурации.",
+        back_to="limits",
+        target="cap",
+    )
+
+
+@router.callback_query(F.data.startswith("adm:limemp:"))
+async def start_setting_employee_limit(query: CallbackQuery, state: FSMContext) -> None:
+    employee_id = _tail(query)
+    await _ask(
+        query,
+        state,
+        SetLimit.waiting_for_value,
+        f"Сколько запросов к ИИ в день у этого человека? Число от 0 до "
+        f"{MAX_DAILY_LIMIT}, или «{SKIP}», чтобы вернуть общий лимит.",
+        back_to="card",
+        back_arg=employee_id,
+        target=employee_id,
+    )
+
+
+@router.message(SetLimit.waiting_for_value)
+async def apply_limit(message: Message, state: FSMContext, services: BotContext) -> None:
+    if await _refused_a_command(message, state):
+        return
+
+    raw = (message.text or "").strip()
+    # `SKIP` clears the override; 0 is a real answer meaning no replies at all.
+    limit = None if raw == SKIP else _parse_limit(raw)
+    if raw != SKIP and limit is None:
+        await _step(message, state, "Нужно целое неотрицательное число.", cancel_keyboard())
+        return
+
+    data = await state.get_data()
+    target = str(data.get("target", ""))
+    actor_id = message.from_user.id if message.from_user else 0
+
+    try:
+        if target == "default":
+            manage_limits.set_default_limit(
+                limit=limit, actor_id=actor_id, settings=services.settings, audit=services.audit
+            )
+        elif target == "cap":
+            manage_limits.set_global_limit(
+                limit=limit, actor_id=actor_id, settings=services.settings, audit=services.audit
+            )
+        else:
+            manage_limits.set_employee_limit(
+                employee_id=target,
+                limit=limit,
+                actor_id=actor_id,
+                offices=services.offices,
+                roster=services.roster,
+                audit=services.audit,
+            )
+    except LimitError as error:
+        await _step(message, state, str(error), cancel_keyboard())
+        return
+
+    if target in {"default", "cap"}:
+        await _finish(message, state, *limits_screen(services))
+        return
+    await _finish(message, state, *_card_or_menu(services, target, message))
+
+
+def _parse_limit(raw: str) -> int | None:
+    # `isdecimal`, not `int()`: a minus sign parses fine and would mean something absurd.
+    return int(raw) if raw.isdecimal() else None
+
+
 # ----------------------------------------------------------------------------- admins
 #
 # Owner-only, twice over. These handlers hide the buttons, and `manage_admins` refuses
@@ -1610,6 +1731,11 @@ def card_screen(services: BotContext, employee_id: str) -> tuple[str, InlineKeyb
     linked = "да" if employee.telegram_user_id is not None else "нет"
     gender = "женский" if str(employee.gender) == "female" else "мужской"
     days = ", ".join(format_date(day, common) for day in upcoming) or "нет"
+    allowance = (
+        f"{employee.ai_daily_limit} (свой)"
+        if employee.ai_daily_limit is not None
+        else f"{services.chat_policy.per_user_daily_limit} (по умолчанию)"
+    )
 
     lines = [
         f"<b>{html.escape(employee.full_name)}</b>",
@@ -1617,6 +1743,7 @@ def card_screen(services: BotContext, employee_id: str) -> tuple[str, InlineKeyb
         f"Ник: {html.escape(handle)} · привязан: {linked}",
         f"Род: {gender}",
         f"Ближайшие дни: {html.escape(days)}",
+        f"Лимит ИИ: {allowance}",
     ]
     if departed:
         ended = employee.ended_on.isoformat() if employee.ended_on else "—"
@@ -1734,6 +1861,41 @@ def calendar_screen(
         f"Сейчас: <b>{found.holiday_calendar}</b>",
         calendar_picker(office_id, CALENDARS, found.holiday_calendar),
     )
+
+
+def limits_screen(services: BotContext) -> tuple[str, InlineKeyboardMarkup]:
+    """What the AI allowance is, and who is not on it.
+
+    The counts are in the text because Telegram refuses to redraw a message whose text and
+    markup are both unchanged, and every button here leads away rather than toggling.
+    """
+    policy = services.chat_policy
+    singled_out = [
+        employee
+        for office in services.offices.all_offices()
+        for employee in services.offices.employees(office.id)
+        if employee.ai_daily_limit is not None
+    ]
+
+    lines = [
+        "<b>Лимиты ИИ</b>",
+        f"По умолчанию: <b>{policy.per_user_daily_limit}</b> запросов в день на человека",
+        f"Общий предел: <b>{policy.global_daily_limit}</b> запросов в день на всех",
+        "",
+        f"Сегодня использовано: {services.usage.total_today(services.clock.today())}",
+    ]
+    if singled_out:
+        lines.append("")
+        lines.append(f"Свой лимит у {len(singled_out)} чел.:")
+        lines += [
+            f"• {html.escape(employee.full_name)} — {employee.ai_daily_limit}"
+            for employee in sorted(singled_out, key=lambda e: e.full_name.casefold())[:10]
+        ]
+    else:
+        lines.append("")
+        lines.append("Личные лимиты меняются в карточке сотрудника.")
+
+    return ("\n".join(lines), limits_menu())
 
 
 def admins_screen(services: BotContext, *, viewer_id: int) -> tuple[str, InlineKeyboardMarkup]:

@@ -20,13 +20,16 @@ from tabelshchik.adapters.clock import FixedClock
 from tabelshchik.adapters.telegram.routers.admin import (
     MAX_DESKS,
     _parse_count,
+    card_screen,
     desks_screen,
     fixed_day_screen,
     fixed_screen,
+    limits_screen,
     office_screen,
     roster_screen,
 )
 from tabelshchik.application.ids import MAX_ID_LENGTH, MAX_OFFICE_ID_LENGTH
+from tabelshchik.application.policy import ChatPolicy
 from tabelshchik.application.voice import MoodPolicy, Voice
 from tabelshchik.bootstrap.mapping import catalog
 from tabelshchik.config.loader import parse_file
@@ -51,12 +54,29 @@ class Ctx:
     """Just enough of `BotContext` for a screen builder."""
 
     def __init__(self, sessions) -> None:
-        from tabelshchik.adapters.db.repositories import SqlOfficeStore, SqlRosterStore
+        from tabelshchik.adapters.db.repositories import (
+            SqlOfficeStore,
+            SqlRosterStore,
+            SqlScheduleStore,
+            SqlSettingsStore,
+            SqlUsageStore,
+        )
 
         self.offices = SqlOfficeStore(sessions)
         self.roster = SqlRosterStore(sessions)
+        self.schedule = SqlScheduleStore(sessions)
+        self.settings = SqlSettingsStore(sessions)
+        self.usage = SqlUsageStore(sessions)
         self.clock = FixedClock(NOW)
         self.voice = Voice(catalog=CATALOG, moods=MoodPolicy(weights={Mood.TOXIC: 1}))
+
+    @property
+    def chat_policy(self) -> ChatPolicy:
+        """As the container builds it: the file's default unless a row overrides it."""
+        return ChatPolicy(
+            per_user_daily_limit=self.settings.ai_daily_limit() or 10,
+            global_daily_limit=self.settings.ai_global_daily_limit() or 200,
+        )
 
 
 @pytest.fixture
@@ -368,3 +388,42 @@ def test_every_callback_a_screen_emits_fits_telegram_s_limit(sessions) -> None:
         assert screen is not None
         for data in callbacks(screen[1]):
             assert len(data.encode()) <= 64, f"{data} is {len(data.encode())} bytes"
+
+
+# ------------------------------------------------------------------------- AI limits
+
+
+def test_the_limits_screen_shows_what_is_in_force(ctx) -> None:
+    text, _markup = limits_screen(ctx)
+    assert "10" in text
+    assert "200" in text
+
+
+def test_a_changed_default_is_what_the_screen_reports(ctx) -> None:
+    ctx.settings.set_ai_daily_limit(25)
+    assert "25" in limits_screen(ctx)[0]
+
+
+def test_people_with_their_own_limit_are_named(ctx) -> None:
+    """So an admin can see who is not on the default without opening every card."""
+    assert "Свой лимит" not in limits_screen(ctx)[0]
+
+    ctx.roster.set_ai_limit("anya", 3)
+    text = limits_screen(ctx)[0]
+    assert "Свой лимит у 1" in text
+    assert "Аня — 3" in text
+
+
+def test_a_card_says_whether_the_limit_is_theirs_or_the_default(ctx) -> None:
+    card = card_screen(ctx, "anya")
+    assert card is not None and "10 (по умолчанию)" in card[0]
+
+    ctx.roster.set_ai_limit("anya", 3)
+    card = card_screen(ctx, "anya")
+    assert card is not None and "3 (свой)" in card[0]
+
+
+def test_a_card_offers_a_way_to_change_it(ctx) -> None:
+    card = card_screen(ctx, "anya")
+    assert card is not None
+    assert "adm:limemp:anya" in callbacks(card[1])

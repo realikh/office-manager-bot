@@ -62,8 +62,12 @@ ai:
   model: gpt-4.1-nano       # cheapest nano-class chat model; one line to change
   maxTokens: 400
   temperature: 1.0
-  perUserDailyLimit: 10
-  globalDailyLimit: 200     # cost stop-loss
+  # Both are defaults. An admin can move either from /admin → 🤖 Лимиты ИИ without a
+  # deploy, and can give one person their own allowance from their card; what is stored
+  # there overrides what is here. Raising this number lifts everybody who has not been
+  # singled out.
+  perUserDailyLimit: 10     # per person, per day
+  globalDailyLimit: 200     # cost stop-loss across everybody
   triggers: [mention, reply, private]
   requestTimeoutSeconds: 20
   maxRetries: 2

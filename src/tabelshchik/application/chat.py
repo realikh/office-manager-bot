@@ -3,6 +3,10 @@
 Rate-limited twice over: a per-person daily allowance so nobody monopolises it, and a
 global daily cap that exists purely so a strange day cannot run up a bill.
 
+The per-person allowance is the configured default unless an admin has singled somebody
+out. Storing an override rather than a copy of the default is what lets the default be
+raised later without walking the roster — only the people deliberately moved stay put.
+
 The model is grounded rather than given tools. It is handed today's date, the asking
 person's own upcoming office days, tomorrow's roster, the thread being replied to, and a
 handful of short facts it previously asked to remember — and nothing else, so there is
@@ -97,7 +101,8 @@ async def answer(
     if not cleaned:
         return ChatReply("", ChatRefusal.EMPTY)
 
-    if usage.used_today(user_id, today) >= policy.per_user_daily_limit:
+    employee = offices.find_employee_by_user_id(user_id)
+    if usage.used_today(user_id, today) >= _allowance(employee, policy):
         return ChatReply(
             _line(voice, "ai.rateLimited", mood, office_id, today), ChatRefusal.USER_LIMIT
         )
@@ -107,7 +112,6 @@ async def answer(
             _line(voice, "ai.rateLimited", mood, office_id, today), ChatRefusal.GLOBAL_LIMIT
         )
 
-    employee = offices.find_employee_by_user_id(user_id)
     system = _system_prompt(voice, mood, remember=policy.remember and memories is not None)
     prompt = _user_prompt(
         question=cleaned,
@@ -182,6 +186,18 @@ def _store(
         return
 
     memories.remember(remembered.scope, subject, remembered.fact, keep=keep, at=clock.now())
+
+
+def _allowance(employee: Employee | None, policy: ChatPolicy) -> int:
+    """How many replies this person gets today.
+
+    Somebody with no roster record — an admin who is not an employee anywhere — gets the
+    default. There is nowhere to hang an override on them, and refusing them outright
+    would lock the bot's own operators out of it.
+    """
+    if employee is not None and employee.ai_daily_limit is not None:
+        return employee.ai_daily_limit
+    return policy.per_user_daily_limit
 
 
 def _line(voice: Voice, key: str, mood: Mood, office_id: str, day: date) -> str:

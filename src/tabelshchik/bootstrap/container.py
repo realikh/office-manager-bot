@@ -35,6 +35,7 @@ from tabelshchik.adapters.db.repositories import (
     SqlOfficeStore,
     SqlRosterStore,
     SqlScheduleStore,
+    SqlSettingsStore,
     SqlUsageStore,
 )
 from tabelshchik.adapters.db.seed import seed_admins
@@ -64,6 +65,7 @@ from tabelshchik.application.ports import (
     OfficeStore,
     RosterStore,
     ScheduleStore,
+    SettingsStore,
     UsageStore,
 )
 from tabelshchik.application.prune_history import RetentionPolicy
@@ -107,6 +109,7 @@ class Services:
     # mutable attribute typed by its implementation would not satisfy one.
     offices: OfficeStore = field(init=False)
     admins: AdminStore = field(init=False)
+    settings: SettingsStore = field(init=False)
     office_admin: OfficeAdminStore = field(init=False)
     schedule: ScheduleStore = field(init=False)
     ledger: LedgerStore = field(init=False)
@@ -123,6 +126,7 @@ class Services:
     def __post_init__(self) -> None:
         self.offices = SqlOfficeStore(self.sessions)
         self.admins = SqlAdminStore(self.sessions)
+        self.settings = SqlSettingsStore(self.sessions)
         self.office_admin = SqlOfficeAdminStore(self.sessions)
         self.schedule = SqlScheduleStore(self.sessions)
         self.ledger = SqlLedgerStore(self.sessions)
@@ -173,10 +177,15 @@ class Services:
     @property
     def chat_policy(self) -> ChatPolicy:
         section = self.app.ai
+        # The file carries the defaults; a row in `setting` overrides one. Read every
+        # time rather than cached, so changing a limit from the bot takes effect on the
+        # next message instead of the next deploy.
         return ChatPolicy(
             enabled=section.enabled,
-            per_user_daily_limit=section.per_user_daily_limit,
-            global_daily_limit=section.global_daily_limit,
+            per_user_daily_limit=(self.settings.ai_daily_limit() or section.per_user_daily_limit),
+            global_daily_limit=(
+                self.settings.ai_global_daily_limit() or section.global_daily_limit
+            ),
             max_tokens=section.max_tokens,
             temperature=section.temperature,
             triggers=frozenset(section.triggers),

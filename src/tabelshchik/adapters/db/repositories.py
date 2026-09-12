@@ -245,6 +245,7 @@ def _to_employee(row: models.Employee) -> Employee:
         team_id=row.team_id,
         started_on=row.started_on,
         ended_on=row.ended_on,
+        ai_daily_limit=row.ai_daily_limit,
     )
 
 
@@ -1113,6 +1114,15 @@ class SqlRosterStore(SqlRepository):
             row.seed_nonce += 1
             return row.seed_nonce
 
+    def set_ai_limit(self, employee_id: str, limit: int | None) -> bool:
+        """None restores the default. Zero is a real answer meaning "no replies"."""
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Employee, employee_id)
+            if row is None:
+                return False
+            row.ai_daily_limit = limit
+            return True
+
     def set_chat_id(self, office_id: str, chat_id: int | None) -> None:
         with session_scope(self._sessions) as session:
             row = session.get(models.Office, office_id)
@@ -1306,3 +1316,48 @@ class SqlOfficeAdminStore(SqlRepository):
                 return False
             session.delete(row)
             return True
+
+
+# --------------------------------------------------------------------------- settings
+
+
+class SqlSettingsStore(SqlRepository):
+    """Overrides of the numbers app.yaml carries as defaults.
+
+    A missing row means the file wins, so a default changed in a release reaches every
+    deployment that has not deliberately moved away from it.
+    """
+
+    AI_DAILY_LIMIT = "ai.daily_limit"
+    AI_GLOBAL_DAILY_LIMIT = "ai.global_daily_limit"
+
+    def ai_daily_limit(self) -> int | None:
+        return self._get(self.AI_DAILY_LIMIT)
+
+    def ai_global_daily_limit(self) -> int | None:
+        return self._get(self.AI_GLOBAL_DAILY_LIMIT)
+
+    def set_ai_daily_limit(self, value: int | None) -> None:
+        self._set(self.AI_DAILY_LIMIT, value)
+
+    def set_ai_global_daily_limit(self, value: int | None) -> None:
+        self._set(self.AI_GLOBAL_DAILY_LIMIT, value)
+
+    def _get(self, key: str) -> int | None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Setting, key)
+            return row.value if row is not None else None
+
+    def _set(self, key: str, value: int | None) -> None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Setting, key)
+            if value is None:
+                # Deleting rather than storing a sentinel, so "not set" has one spelling
+                # and the configured default reappears on its own.
+                if row is not None:
+                    session.delete(row)
+                return
+            if row is None:
+                session.add(models.Setting(key=key, value=value))
+                return
+            row.value = value

@@ -28,6 +28,7 @@ def main_menu(*, owner: bool = False) -> InlineKeyboardMarkup:
         (button("⚖️ Справедливость", "adm:fair"), button("🎭 Настроение", "adm:mood")),
         (button("📊 Состояние", "adm:status"), button("⚙️ Конфиг", "adm:config")),
         (button("💾 Резервная копия", "adm:backup"),),
+        (button("🤖 Лимиты ИИ", "adm:limits"),),
     ]
     if owner:
         rows.append((button("👑 Администраторы", "adm:admins"),))
@@ -131,6 +132,14 @@ def calendar_picker(office_id: str, codes: Sequence[str], current: str) -> Inlin
     return keyboard(*rows, (button("‹ Назад", f"adm:oset:{office_id}"),))
 
 
+def limits_menu() -> InlineKeyboardMarkup:
+    return keyboard(
+        (button("✏️ По умолчанию", "adm:limdef"),),
+        (button("✏️ Общий предел", "adm:limcap"),),
+        (button("‹ Назад", "adm:menu"),),
+    )
+
+
 def employee_list(office_id: str, entries: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:
     """One button per person, plus a way to add one.
 
@@ -154,6 +163,7 @@ def employee_card(office_id: str, employee_id: str, *, departed: bool) -> Inline
     return keyboard(
         (button("✏️ Переименовать", f"adm:empname:{employee_id}"),),
         (button("🔗 Telegram-ник", f"adm:empuser:{employee_id}"),),
+        (button("🤖 Лимит ИИ", f"adm:limemp:{employee_id}"),),
         (tenure,),
         (button("‹ Назад", f"adm:emp:{office_id}"),),
     )

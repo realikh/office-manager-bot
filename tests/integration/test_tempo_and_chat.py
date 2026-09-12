@@ -9,6 +9,7 @@ from tabelshchik.adapters.clock import FixedClock
 from tabelshchik.adapters.db.repositories import (
     SqlLedgerStore,
     SqlOfficeStore,
+    SqlRosterStore,
     SqlScheduleStore,
     SqlUsageStore,
 )
@@ -304,3 +305,80 @@ async def test_the_question_is_capped_before_it_reaches_the_model(sessions) -> N
     model = StubChatModel(reply="ок")
     await ask(sessions, model=model, question="б" * 5000)
     assert len(model.prompts[0][1]) < 2000
+
+
+# ------------------------------------------------------------- per-person AI allowances
+
+
+async def test_somebody_singled_out_gets_their_own_allowance(sessions) -> None:
+    """The point of the feature: one person can be moved without moving anybody else."""
+    seed(sessions)
+    offices = SqlOfficeStore(sessions)
+    offices.link_telegram_user("anya", 42)
+    SqlRosterStore(sessions).set_ai_limit("anya", 1)
+
+    assert (await ask(sessions, user_id=42, per_user_daily_limit=10)).answered
+    assert (await ask(sessions, user_id=42, per_user_daily_limit=10)).refusal is (
+        ChatRefusal.USER_LIMIT
+    )
+
+
+async def test_an_override_can_be_more_generous_than_the_default(sessions) -> None:
+    seed(sessions)
+    offices = SqlOfficeStore(sessions)
+    offices.link_telegram_user("anya", 42)
+    SqlRosterStore(sessions).set_ai_limit("anya", 3)
+
+    for _ in range(3):
+        assert (await ask(sessions, user_id=42, per_user_daily_limit=1)).answered
+    assert (await ask(sessions, user_id=42, per_user_daily_limit=1)).refusal is (
+        ChatRefusal.USER_LIMIT
+    )
+
+
+async def test_raising_the_default_moves_everybody_who_was_never_singled_out(sessions) -> None:
+    """Why the column is nullable rather than backfilled with today's number.
+
+    Storing a copy of the default on every employee would freeze the roster at whatever
+    it happened to be, and make changing the default do nothing.
+    """
+    seed(sessions)
+    SqlOfficeStore(sessions).link_telegram_user("anya", 42)
+
+    await ask(sessions, user_id=42, per_user_daily_limit=1)
+    assert (await ask(sessions, user_id=42, per_user_daily_limit=1)).refusal is (
+        ChatRefusal.USER_LIMIT
+    )
+    assert (await ask(sessions, user_id=42, per_user_daily_limit=5)).answered
+
+
+async def test_zero_means_no_replies_at_all(sessions) -> None:
+    """Distinct from None, which means "no limit of their own"."""
+    seed(sessions)
+    SqlOfficeStore(sessions).link_telegram_user("anya", 42)
+    SqlRosterStore(sessions).set_ai_limit("anya", 0)
+
+    assert (await ask(sessions, user_id=42, per_user_daily_limit=10)).refusal is (
+        ChatRefusal.USER_LIMIT
+    )
+
+
+async def test_clearing_an_override_puts_somebody_back_on_the_default(sessions) -> None:
+    seed(sessions)
+    SqlOfficeStore(sessions).link_telegram_user("anya", 42)
+    roster = SqlRosterStore(sessions)
+
+    roster.set_ai_limit("anya", 0)
+    assert (await ask(sessions, user_id=42, per_user_daily_limit=10)).refusal is (
+        ChatRefusal.USER_LIMIT
+    )
+
+    roster.set_ai_limit("anya", None)
+    assert (await ask(sessions, user_id=42, per_user_daily_limit=10)).answered
+
+
+async def test_somebody_with_no_roster_record_gets_the_default(sessions) -> None:
+    """An admin who is not an employee anywhere has nowhere to hang an override, and
+    locking the bot's own operators out of it would be the wrong reading."""
+    seed(sessions)
+    assert (await ask(sessions, user_id=999999, per_user_daily_limit=1)).answered

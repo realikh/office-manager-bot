@@ -64,6 +64,9 @@ class Employee:
     started_on: date | None = None
     #: Inclusive. ``None`` means still employed.
     ended_on: date | None = None
+    #: How many AI replies a day this person gets. ``None`` means the configured default,
+    #: so raising the default later lifts everyone who was never singled out.
+    ai_daily_limit: int | None = None
 
     def in_tenure(self, day: date) -> bool:
         if self.started_on is not None and day < self.started_on:

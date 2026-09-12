@@ -220,7 +220,9 @@ Four layers, all silent. The written corpus is the floor on quality.
    answers an `ai.failed` variant.
 4. **Guards rejected it** → written text, per slot for epithets.
 
-Plus: over the daily allowance → an `ai.rateLimited` variant; output containing a banned
+Plus: over the daily allowance → an `ai.rateLimited` variant. The allowance is per
+person, and either the default or one person's own number can be changed from `/admin`
+without a deploy — see [configuration.md](configuration.md#ai-limits). Plus: output containing a banned
 term → an escaped ellipsis.
 
 ## Cost
