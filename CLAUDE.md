@@ -189,6 +189,33 @@ exempt itself by not being on a hard-coded list. Add a `StatesGroup` and it is c
 It was harmless in the other flows only because a username regex and an integer parser
 rejected the command — luck, not design.
 
+### One screen, and it is the last message
+
+Two operations, both in `adapters/telegram/ui.py`, and every keyboard goes through one:
+
+- **`redraw`** — a callback edits the screen its button lives on, in place.
+- **`rehome`** — anything that has added to the chat since the screen was drawn (the
+  answer the user just typed, a workbook, a preview) moves the screen down beneath it.
+
+**A callback must never send a message carrying a keyboard.** Two keyboards means two live
+screens, and the older one keeps working: pressing a button on it acts on state that has
+moved on. That is what put two identical office lists on screen three minutes apart. A
+callback may send *content* — a document, a rendered fortnight — and then rehome the screen
+below it. `test_no_callback_handler_hands_out_a_second_keyboard` enforces this over both
+routers.
+
+A flow's prompt **replaces** the screen it was launched from rather than stacking under it,
+and records where to return, so ✖️ Отмена goes back to that person's card rather than to
+the top. `_ask` does all three — set the state, replace the screen, remember the origin —
+and attaches `cancel_keyboard()` itself, so a prompt with no way out is not something nine
+call sites can forget. `_step` re-prompts, `_finish` ends the flow; both rehome.
+
+The asymmetry is Telegram's: a bot may delete its own messages but not somebody else's in
+a private chat. The typed answer always stays, which is why the screen follows it down
+instead of updating above it — with a keyboard up on a phone, an edit above the fold looks
+like nothing happened. The remembered message id lives in FSM state, so it dies on restart;
+harmless, since a stale id only means a delete that quietly fails.
+
 ### A handler must never redraw by calling another handler
 
 Callback handlers parse `query.data`. A handler that redraws by calling a sibling makes
@@ -208,7 +235,7 @@ happened to carry the office id in the same position.
 
 Related: **`editMessageText` refuses an unchanged message.** A screen whose only
 difference is a ✅ needs something in the *text* to move too — hence the "отмечено N"
-counter. And do not wrap the edit in a bare `except Exception`: that turns a crash in the
+counter, and the counts in the admins, offices and absences headings. And do not wrap the edit in a bare `except Exception`: that turns a crash in the
 screen being drawn into a second, stale message, which is indistinguishable from the UI
 not responding.
 
