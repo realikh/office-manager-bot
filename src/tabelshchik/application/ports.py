@@ -11,6 +11,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
+from enum import StrEnum
 from typing import Protocol, runtime_checkable
 
 from tabelshchik.domain.calendar import CalendarSpec
@@ -82,6 +83,82 @@ class Clock(Protocol):
     def now(self) -> datetime: ...
     def today(self) -> date: ...
     def time_of_day(self) -> time: ...
+
+
+class AdminRole(StrEnum):
+    """Who may do what on the admin surface.
+
+    The values are stored by `_enum` and matched literally by the single-owner index in
+    `adapters/db/models.py`. Renaming one silently disarms that index.
+    """
+
+    #: Exactly one, always. May grant and revoke adminship, create and delete offices,
+    #: and hand the whole bot over. Cannot be revoked — only transferred.
+    OWNER = "OWNER"
+    #: Everything else the admin menu offers, across every office.
+    ADMIN = "ADMIN"
+
+
+@dataclass(frozen=True, slots=True)
+class AdminRecord:
+    user_id: int
+    role: AdminRole = AdminRole.ADMIN
+    #: Cosmetic, so the list reads as names rather than numbers. Telegram display names
+    #: are not stable, so this is a snapshot taken when adminship was granted.
+    label: str = ""
+    employee_id: str | None = None
+    granted_at: datetime | None = None
+
+    @property
+    def is_owner(self) -> bool:
+        return self.role is AdminRole.OWNER
+
+
+class AdminStore(Protocol):
+    """Who may use the admin surface.
+
+    Adminship lives here rather than in the configuration because handing the bot to
+    somebody else should not require an SSH session, and because an owner who wants to
+    stop being an admin must be able to actually stop.
+    """
+
+    def role_of(self, user_id: int) -> AdminRole | None: ...
+    def ids(self) -> frozenset[int]: ...
+    def owner_id(self) -> int | None: ...
+    def listing(self) -> Sequence[AdminRecord]: ...
+    def count(self) -> int: ...
+    def grant(
+        self,
+        user_id: int,
+        *,
+        role: AdminRole = AdminRole.ADMIN,
+        label: str = "",
+        employee_id: str | None = None,
+        granted_by: int | None = None,
+        at: datetime,
+    ) -> bool: ...
+    def revoke(self, user_id: int) -> bool: ...
+    #: One transaction, demoting before promoting. Two calls would trip the single-owner
+    #: index halfway through and could leave the bot with no owner at all.
+    def transfer_ownership(self, *, to_user_id: int, at: datetime) -> int | None: ...
+
+
+class OfficeAdminStore(Protocol):
+    """Creating and retiring offices, as opposed to editing what is inside one.
+
+    Apart from `RosterStore` because `delete_office` is a cascading hard delete, and
+    `RosterStore` is documented as the things an admin changes about who works where.
+    """
+
+    def create_office(
+        self, office_id: str, name: str, *, timezone: str, holiday_calendar: str
+    ) -> bool: ...
+    def rename_office(self, office_id: str, name: str) -> bool: ...
+    def set_holiday_calendar(self, office_id: str, code: str) -> bool: ...
+    def set_active(self, office_id: str, active: bool) -> bool: ...
+    #: Cascades away every employee, assignment and ledger entry the office ever had.
+    #: Only reachable behind a typed confirmation.
+    def delete_office(self, office_id: str) -> bool: ...
 
 
 class OfficeStore(Protocol):

@@ -16,6 +16,8 @@ from tabelshchik.adapters.db import models
 from tabelshchik.adapters.db.engine import session_scope
 from tabelshchik.adapters.holiday_calendar import public_holidays
 from tabelshchik.application.ports import (
+    AdminRecord,
+    AdminRole,
     CachedMessage,
     DaySnapshot,
     MemoryFact,
@@ -1117,3 +1119,190 @@ class SqlRosterStore(SqlRepository):
             if row is None:
                 raise LookupError(f"unknown office: {office_id}")
             row.chat_id = chat_id
+
+
+# ---------------------------------------------------------------------------- admins
+
+
+class SqlAdminStore(SqlRepository):
+    """Who may use the admin surface.
+
+    `role_of` runs on every update through the `AdminOnly` middleware and is deliberately
+    uncached: it is one primary-key lookup against a local SQLite file holding a handful
+    of rows — cheaper than the office read the same update already makes — and an
+    uncached read is what makes a promotion take effect on the person's next message
+    rather than at the next deploy.
+    """
+
+    def role_of(self, user_id: int) -> AdminRole | None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Admin, user_id)
+            return row.role if row is not None else None
+
+    def ids(self) -> frozenset[int]:
+        with session_scope(self._sessions) as session:
+            return frozenset(session.scalars(select(models.Admin.telegram_user_id)).all())
+
+    def owner_id(self) -> int | None:
+        with session_scope(self._sessions) as session:
+            return session.scalar(
+                select(models.Admin.telegram_user_id).where(models.Admin.role == AdminRole.OWNER)
+            )
+
+    def listing(self) -> Sequence[AdminRecord]:
+        with session_scope(self._sessions) as session:
+            rows = session.scalars(
+                # The owner first, then by when they were granted: the order the screen
+                # wants, and stable enough that a button does not move under a thumb.
+                #
+                # Ordering by `role` would not do it. `_enum` stores the value, and
+                # "ADMIN" sorts before "OWNER", so the owner would land wherever the
+                # alphabet put them — right until somebody renamed a role.
+                select(models.Admin).order_by(
+                    models.Admin.role != AdminRole.OWNER, models.Admin.granted_at
+                )
+            ).all()
+            return [_to_admin(row) for row in rows]
+
+    def count(self) -> int:
+        with session_scope(self._sessions) as session:
+            return len(session.scalars(select(models.Admin.telegram_user_id)).all())
+
+    def grant(
+        self,
+        user_id: int,
+        *,
+        role: AdminRole = AdminRole.ADMIN,
+        label: str = "",
+        employee_id: str | None = None,
+        granted_by: int | None = None,
+        at: datetime,
+    ) -> bool:
+        """False when they were already an admin, so the caller can say so."""
+        with session_scope(self._sessions) as session:
+            if session.get(models.Admin, user_id) is not None:
+                return False
+            session.add(
+                models.Admin(
+                    telegram_user_id=user_id,
+                    role=role,
+                    label=label,
+                    employee_id=employee_id,
+                    granted_by=granted_by,
+                    granted_at=at,
+                )
+            )
+            return True
+
+    def revoke(self, user_id: int) -> bool:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Admin, user_id)
+            if row is None:
+                return False
+            session.delete(row)
+            return True
+
+    def transfer_ownership(self, *, to_user_id: int, at: datetime) -> int | None:
+        """Demote the current owner, then promote the new one. One transaction, that order.
+
+        SQLite checks the single-owner index per statement rather than at commit, so
+        promoting first raises an IntegrityError out of the session scope — neither
+        catchable at the call site nor legible to whoever pressed the button. Two separate
+        store calls would also leave a window with two owners, or none, if the process
+        died between them.
+
+        Returns the id of whoever stopped being the owner, or None if nothing changed.
+        """
+        with session_scope(self._sessions) as session:
+            target = session.get(models.Admin, to_user_id)
+            if target is None or target.role is AdminRole.OWNER:
+                return None
+
+            current = session.scalar(
+                select(models.Admin).where(models.Admin.role == AdminRole.OWNER)
+            )
+            if current is not None:
+                current.role = AdminRole.ADMIN
+                session.flush()
+
+            target.role = AdminRole.OWNER
+            target.granted_at = at
+            return current.telegram_user_id if current is not None else None
+
+
+def _to_admin(row: models.Admin) -> AdminRecord:
+    return AdminRecord(
+        user_id=row.telegram_user_id,
+        role=row.role,
+        label=row.label,
+        employee_id=row.employee_id,
+        granted_at=row.granted_at,
+    )
+
+
+# ------------------------------------------------------------------- office lifecycle
+
+
+class SqlOfficeAdminStore(SqlRepository):
+    """Creating and retiring offices, as opposed to editing what is inside one."""
+
+    def create_office(
+        self, office_id: str, name: str, *, timezone: str, holiday_calendar: str
+    ) -> bool:
+        """False when the id is taken, rather than an IntegrityError out of the scope."""
+        with session_scope(self._sessions) as session:
+            if session.get(models.Office, office_id) is not None:
+                return False
+            session.add(
+                models.Office(
+                    id=office_id,
+                    name=name,
+                    timezone=timezone,
+                    holiday_calendar=holiday_calendar,
+                )
+            )
+            return True
+
+    def rename_office(self, office_id: str, name: str) -> bool:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Office, office_id)
+            if row is None:
+                return False
+            row.name = name
+            return True
+
+    def set_holiday_calendar(self, office_id: str, code: str) -> bool:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Office, office_id)
+            if row is None:
+                return False
+            row.holiday_calendar = code
+            return True
+
+    def set_active(self, office_id: str, active: bool) -> bool:
+        """Closing an office is the reversible half, and the one to reach for.
+
+        It stops the office being scheduled or messaged while leaving every employee,
+        assignment and ledger entry exactly where they were, so reopening is one tap.
+        """
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Office, office_id)
+            if row is None:
+                return False
+            row.active = active
+            return True
+
+    def delete_office(self, office_id: str) -> bool:
+        """The irreversible half. Cascades take the whole history with it.
+
+        Employees, the weekly template, calendar exceptions, schedule days, assignments
+        and generation runs all hang off `office.id` with ON DELETE CASCADE, so this is
+        not a hiding place — it is the end of the record. Reachable only behind a typed
+        confirmation.
+        """
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Office, office_id)
+            if row is None:
+                return False
+            session.delete(row)
+            return True

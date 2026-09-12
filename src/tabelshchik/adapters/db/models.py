@@ -22,10 +22,14 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy import Enum as SAEnum
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+# The only import here that is not a domain entity. Adminship is a Telegram-permissions
+# concept, not a scheduling one, so it lives with the ports rather than in the domain.
+from tabelshchik.application.ports import AdminRole
 from tabelshchik.domain.entities import (
     AbsenceKind,
     AssignmentSource,
@@ -54,6 +58,39 @@ class Base(DeclarativeBase):
         dict[str, Any]: JSON,
         list[str]: JSON,
     }
+
+
+class Admin(Base):
+    """Who may use the admin surface.
+
+    The single-owner rule is a partial unique index rather than application-only
+    discipline, because two owners is not a state anything here knows how to resolve.
+    SQLite checks it per statement rather than at commit, which is why
+    `SqlAdminStore.transfer_ownership` demotes before it promotes.
+
+    The index matches `role = 'OWNER'` literally, so `AdminRole.OWNER` must keep that
+    value: changing it disarms the index silently. And `migrations/env.py` renders in
+    batch mode, so anything that rebuilds this table must re-create the predicate by
+    hand — SQLite cannot alter an index in place.
+    """
+
+    __tablename__ = "admin"
+
+    telegram_user_id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    role: Mapped[AdminRole] = mapped_column(_enum(AdminRole), default=AdminRole.ADMIN)
+    #: Cosmetic, so the list reads as names rather than numbers. Snapshotted when
+    #: adminship was granted; Telegram display names are not stable.
+    label: Mapped[str] = mapped_column(String(128), default="")
+    #: Set when adminship was granted by picking somebody off a roster. Deliberately not
+    #: a foreign key: adminship has to survive the person being fired, and a cascade
+    #: would revoke it as a silent side effect of a roster edit.
+    employee_id: Mapped[str | None] = mapped_column(String(64), default=None)
+    granted_by: Mapped[int | None] = mapped_column(Integer, default=None)
+    granted_at: Mapped[datetime] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("uq_admin_single_owner", "role", unique=True, sqlite_where=text("role = 'OWNER'")),
+    )
 
 
 class Office(Base):

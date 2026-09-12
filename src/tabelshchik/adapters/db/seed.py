@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from tabelshchik.adapters.db import models
+from tabelshchik.application.ports import AdminRole
 from tabelshchik.config.models import OfficeSeed
 from tabelshchik.domain.entities import AbsenceKind
 
@@ -143,3 +144,37 @@ def _insert_calendar(session: Session, seed: OfficeSeed) -> None:
 
 def existing_office_ids(session: Session) -> set[str]:
     return set(session.scalars(select(models.Office.id)).all())
+
+
+def seed_admins(session: Session, user_ids: frozenset[int], *, now: datetime) -> tuple[int, ...]:
+    """Fill an *empty* admin table from the environment. Never touches a non-empty one.
+
+    The same rule the office seeds follow: a seed is a bootstrap, not a live source. Once
+    anybody is in this table `ADMIN_IDS` does nothing at all, and the bot's own screen is
+    the way to change who is an admin. That is what lets an owner hand the bot over and
+    then remove themselves — an environment variable that kept re-granting adminship
+    every boot would make leaving impossible.
+
+    The emptiness test is also the way back in: delete every row by hand and the next
+    boot re-seeds from the environment. Nothing in the UI can reach that state, because
+    the owner cannot be revoked and there is always exactly one.
+
+    The lowest id becomes the owner. Arbitrary, but `frozenset` has no order and the
+    alternative is a different owner on each boot.
+    """
+    if not user_ids:
+        return ()
+    if session.scalar(select(models.Admin.telegram_user_id)) is not None:
+        return ()
+
+    ordered = sorted(user_ids)
+    for index, user_id in enumerate(ordered):
+        session.add(
+            models.Admin(
+                telegram_user_id=user_id,
+                role=AdminRole.OWNER if index == 0 else AdminRole.ADMIN,
+                granted_at=now,
+            )
+        )
+    session.flush()
+    return tuple(ordered)
