@@ -22,6 +22,7 @@ from tabelshchik.application.policy import (
 )
 from tabelshchik.application.ports import (
     AbsenceStore,
+    AdminStore,
     AuditLog,
     ChatMemoryStore,
     Clock,
@@ -30,6 +31,7 @@ from tabelshchik.application.ports import (
     MaintenanceStore,
     MessageCache,
     Notifier,
+    OfficeAdminStore,
     OfficeStore,
     RosterStore,
     ScheduleStore,
@@ -50,6 +52,8 @@ class BotContext(Protocol):
     config_dir: Path
 
     offices: OfficeStore
+    admins: AdminStore
+    office_admin: OfficeAdminStore
     schedule: ScheduleStore
     ledger: LedgerStore
     absences: AbsenceStore
@@ -80,3 +84,5 @@ class BotContext(Protocol):
     def admin_chat_id(self) -> int | None: ...
 
     def is_admin(self, user_id: int | None) -> bool: ...
+
+    def is_owner(self, user_id: int | None) -> bool: ...

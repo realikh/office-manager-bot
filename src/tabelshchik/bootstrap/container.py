@@ -7,6 +7,7 @@ dependency graph something you can read in one file instead of inferring from im
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -22,6 +23,7 @@ from tabelshchik.adapters.db.engine import (
 )
 from tabelshchik.adapters.db.repositories import (
     SqlAbsenceStore,
+    SqlAdminStore,
     SqlAuditLog,
     SqlChatMemoryStore,
     SqlJobLedger,
@@ -29,12 +31,13 @@ from tabelshchik.adapters.db.repositories import (
     SqlMaintenance,
     SqlMessageCache,
     SqlMoodStore,
+    SqlOfficeAdminStore,
     SqlOfficeStore,
     SqlRosterStore,
     SqlScheduleStore,
     SqlUsageStore,
 )
-from tabelshchik.adapters.db.seed import seed_offices
+from tabelshchik.adapters.db.seed import seed_admins, seed_offices
 from tabelshchik.adapters.openai.client import OpenAiChatModel
 from tabelshchik.application.policy import (
     ChatPolicy,
@@ -44,6 +47,8 @@ from tabelshchik.application.policy import (
 )
 from tabelshchik.application.ports import (
     AbsenceStore,
+    AdminRole,
+    AdminStore,
     AuditLog,
     ChatMemoryStore,
     ChatModel,
@@ -54,6 +59,7 @@ from tabelshchik.application.ports import (
     MessageCache,
     MoodStore,
     Notifier,
+    OfficeAdminStore,
     OfficeStore,
     RosterStore,
     ScheduleStore,
@@ -71,6 +77,8 @@ from tabelshchik.bootstrap.settings import Secrets
 from tabelshchik.config.loader import LoadedConfig, load, parse_file
 from tabelshchik.config.messages import MessagesConfig
 from tabelshchik.config.models import AppConfig
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -94,6 +102,8 @@ class Services:
     # Declared as the ports, not the SQL classes: handlers depend on the protocol, and a
     # mutable attribute typed by its implementation would not satisfy one.
     offices: OfficeStore = field(init=False)
+    admins: AdminStore = field(init=False)
+    office_admin: OfficeAdminStore = field(init=False)
     schedule: ScheduleStore = field(init=False)
     ledger: LedgerStore = field(init=False)
     absences: AbsenceStore = field(init=False)
@@ -108,6 +118,8 @@ class Services:
 
     def __post_init__(self) -> None:
         self.offices = SqlOfficeStore(self.sessions)
+        self.admins = SqlAdminStore(self.sessions)
+        self.office_admin = SqlOfficeAdminStore(self.sessions)
         self.schedule = SqlScheduleStore(self.sessions)
         self.ledger = SqlLedgerStore(self.sessions)
         self.absences = SqlAbsenceStore(self.sessions)
@@ -171,15 +183,33 @@ class Services:
 
     @property
     def admin_ids(self) -> frozenset[int]:
-        return frozenset(self.secrets.admin_ids or self.app.admins)
+        """Every admin. Used to publish command menus; `is_admin` is the gate.
+
+        Read from the database rather than the environment, and deliberately not cached.
+        It is a handful of rows on a local SQLite file, and an uncached read is what
+        makes a promotion take effect on that person's next message instead of at the
+        next deploy — which is the whole reason adminship moved out of `.env`.
+        """
+        return self.admins.ids()
 
     @property
     def admin_chat_id(self) -> int | None:
-        """Where alerts and backups go. A Telegram *chat* id, not a user id list."""
-        return self.secrets.admin_chat_id
+        """Where alerts and backups go. A Telegram *chat* id, not a user id list.
+
+        Falls back to the owner's own id so a deployment that never set ADMIN_CHAT_ID
+        still gets its nightly backup somewhere. Setting it explicitly still wins, and
+        `scripts/deploy.sh` reads it out of `.env` directly to report a failed deploy —
+        it cannot reach the database, so the variable is worth keeping set.
+        """
+        return self.secrets.admin_chat_id or self.admins.owner_id()
 
     def is_admin(self, user_id: int | None) -> bool:
-        return user_id is not None and user_id in self.admin_ids
+        # A point lookup rather than `user_id in self.admin_ids`: this runs on every
+        # update that reaches the admin middleware.
+        return user_id is not None and self.admins.role_of(user_id) is not None
+
+    def is_owner(self, user_id: int | None) -> bool:
+        return user_id is not None and self.admins.role_of(user_id) is AdminRole.OWNER
 
 
 def build_services(
@@ -196,10 +226,17 @@ def build_services(
     upgrade_schema(engine)
     sessions = create_session_factory(engine)
 
-    # Seeds are a bootstrap, not a live source: an office that already exists in the
-    # database is left exactly as the admins have edited it.
+    # Both are bootstraps, not live sources: an office that already exists is left
+    # exactly as the admins have edited it, and once anybody is an admin in the database
+    # ADMIN_IDS does nothing — which is what lets an owner hand the bot over and leave.
+    now = SystemClock(config.app.timezone).now()
     with session_scope(sessions) as session:
-        seed_offices(session, config.offices, now=SystemClock(config.app.timezone).now())
+        seed_offices(session, config.offices, now=now)
+        seeded = seed_admins(session, secrets.admin_ids, now=now)
+    if seeded:
+        # Worth saying out loud: "the lowest id becomes the owner" is an arbitrary rule,
+        # and it decides who can hand the bot to somebody else.
+        logger.warning("seeded admins from ADMIN_IDS; %s is the owner", seeded[0])
 
     model = _chat_model(config.app, secrets)
 

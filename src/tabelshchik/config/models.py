@@ -246,7 +246,6 @@ class HealthSection(Base):
 
 class AppConfig(Base):
     timezone: str = "Asia/Almaty"
-    admins: list[int] = Field(default_factory=list)
     reminders: RemindersSection
     silent_hours: SilentHours = SilentHours()
     schedule: ScheduleSection = ScheduleSection()

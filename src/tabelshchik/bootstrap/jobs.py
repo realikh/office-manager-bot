@@ -166,7 +166,7 @@ def _backup_handler(services: Services):  # type: ignore[no-untyped-def]
     """A nightly copy sent to the admin chat — free off-box backups."""
 
     async def handler(_: JobContext) -> None:
-        chat_id = services.secrets.admin_chat_id
+        chat_id = services.admin_chat_id
         if chat_id is None or services.notifier is None:
             return
 
@@ -246,7 +246,7 @@ def alerting(services: Services):  # type: ignore[no-untyped-def]
     """Report a failed job outward instead of letting it die quietly."""
 
     async def on_failure(job: Job, error: BaseException) -> None:
-        chat_id = services.secrets.admin_chat_id
+        chat_id = services.admin_chat_id
         if chat_id is None or services.notifier is None:
             return
         where = f"{job.name}:{job.scope}" if job.scope else job.name

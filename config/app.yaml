@@ -1,16 +1,13 @@
 # Табельщик — operational settings.
 #
-# This file holds settings an operator changes. Rosters, offices and weekly templates
-# live in the database (seeded once from config/offices/*.yaml) so that admins can edit
-# them from the bot without a deploy.
+# This file holds settings an operator changes. Offices, rosters, weekly templates and
+# who is an admin all live in the database, edited from the bot itself, so none of that
+# needs a deploy.
 #
 # Unknown keys are a startup error, not a silent default — if you misspell something here
 # the bot refuses to start rather than quietly ignoring it.
 
 timezone: Asia/Almaty
-
-# Telegram user ids allowed into admin mode. Overridable with the ADMIN_IDS env var.
-admins: []
 
 reminders:
   attendance:

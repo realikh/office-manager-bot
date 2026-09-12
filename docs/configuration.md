@@ -106,7 +106,6 @@ validators will refuse to boot otherwise.
 | Section | Notes |
 |---|---|
 | `timezone` | Everything civil. Also passed explicitly to every cron trigger — see CLAUDE.md. |
-| `admins` | Telegram **user** ids allowed into admin mode. `ADMIN_IDS` overrides. |
 | `reminders.attendance` | `time`, `runOn`, `pin`. Listing `sun` is what covers Sun→Monday; Mon→Tue and Fri→Mon fall out of the one rule. |
 | `silentHours` | Per weekday with a `default`. Silent still *sends* — it just does not buzz. A window may cross midnight. |
 | `schedule` | `horizonWeeks` generated, `freezeWeeks` immutable (must be smaller, validated), `maxDaysPerWeek`, `absencePolicy`, `surplusClamp`. |

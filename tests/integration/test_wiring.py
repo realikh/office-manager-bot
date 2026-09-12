@@ -8,7 +8,7 @@ registered in the wrong order, a protocol the container stopped satisfying.
 from __future__ import annotations
 
 import gc
-from datetime import timedelta
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -119,6 +119,68 @@ def test_malformed_ids_are_ignored_rather_than_crashing_the_boot() -> None:
     secrets = load_secrets({"ADMIN_IDS": "1,not-a-number,", "ADMIN_CHAT_ID": "nonsense"})
     assert secrets.admin_ids == frozenset({1})
     assert secrets.admin_chat_id is None
+
+
+# ------------------------------------------------------------------------- adminship
+
+
+def test_the_first_boot_makes_the_environment_ids_admins(services) -> None:
+    """ADMIN_IDS is a bootstrap for an empty table, not a permanent grant."""
+    assert services.admin_ids == frozenset({1})
+    assert services.is_owner(1)
+    assert services.is_admin(1)
+
+
+def test_a_promotion_takes_effect_without_a_restart(services) -> None:
+    """The reason `admin_ids` is not cached. Adminship moved out of `.env` precisely so
+    that granting it would not need a deploy; a cache would put the deploy back."""
+    assert services.is_admin(77) is False
+    services.admins.grant(77, label="Новый", at=datetime(2026, 9, 11, 12, 0))
+    assert services.is_admin(77) is True
+    assert services.is_owner(77) is False
+
+
+def test_an_owner_who_leaves_is_not_re_granted_by_the_environment(tmp_path: Path) -> None:
+    """The whole feature. Hand the bot over, remove yourself, and stay removed — even
+    though `.env` still names you, and even across a restart."""
+    secrets = Secrets(telegram_bot_token="x:y", admin_ids=frozenset({1}))
+    first = build_services(
+        config_dir=Path("config"), database_path=tmp_path / "t.db", secrets=secrets
+    )
+    first.admins.grant(2, at=datetime(2026, 9, 11, 12, 0))
+    first.admins.transfer_ownership(to_user_id=2, at=datetime(2026, 9, 11, 12, 0))
+    first.admins.revoke(1)
+    first.engine.dispose()
+
+    second = build_services(
+        config_dir=Path("config"), database_path=tmp_path / "t.db", secrets=secrets
+    )
+    try:
+        assert second.is_admin(1) is False
+        assert second.admin_ids == frozenset({2})
+        assert second.is_owner(2)
+    finally:
+        second.engine.dispose()
+        gc.collect()
+
+
+def test_the_backup_falls_back_to_the_owner_when_no_admin_chat_is_set(services) -> None:
+    """A deployment that never set ADMIN_CHAT_ID still gets its nightly backup."""
+    assert services.secrets.admin_chat_id is None
+    assert services.admin_chat_id == 1
+
+
+def test_an_explicit_admin_chat_id_still_wins(tmp_path: Path) -> None:
+    built = build_services(
+        config_dir=Path("config"),
+        database_path=tmp_path / "t.db",
+        secrets=Secrets(telegram_bot_token="x:y", admin_ids=frozenset({1}), admin_chat_id=-100),
+    )
+    try:
+        assert built.admin_chat_id == -100
+    finally:
+        built.engine.dispose()
+        gc.collect()
 
 
 def test_a_fresh_deployment_generates_its_first_schedule(services) -> None:
