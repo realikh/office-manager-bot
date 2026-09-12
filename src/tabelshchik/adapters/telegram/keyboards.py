@@ -160,8 +160,14 @@ def employee_card(office_id: str, employee_id: str, *, departed: bool) -> Inline
 
 
 def gender_picker() -> InlineKeyboardMarkup:
+    """The cancel row is not decoration.
+
+    This is the only keyboard on screen mid-flow, and without it the only way out of a
+    half-finished hire is knowing to type /cancel.
+    """
     return keyboard(
         (button("♂️ Мужской", "adm:empg:male"), button("♀️ Женский", "adm:empg:female")),
+        (button("✖️ Отмена", "adm:cancel"),),
     )
 
 

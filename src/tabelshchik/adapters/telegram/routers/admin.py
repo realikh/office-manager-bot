@@ -1173,8 +1173,12 @@ async def unbind_chat(query: CallbackQuery, services: BotContext) -> None:
         await query.answer(str(error), show_alert=True)
         return
     screen = chat_screen(services, office_id)
-    if screen is not None:
-        await _replace(query, *screen)
+    if screen is None:
+        # `query.answer()` lives inside `_replace`; skipping it leaves the client
+        # spinning on the button forever.
+        await query.answer(NO_SUCH_OFFICE, show_alert=True)
+        return
+    await _replace(query, *screen)
 
 
 @router.callback_query(F.data.startswith("adm:ocal:"))
@@ -1202,8 +1206,12 @@ async def pick_calendar(query: CallbackQuery, services: BotContext) -> None:
         await query.answer(str(error), show_alert=True)
         return
     screen = calendar_screen(services, office_id)
-    if screen is not None:
-        await _replace(query, *screen)
+    if screen is None:
+        # `query.answer()` lives inside `_replace`; skipping it leaves the client
+        # spinning on the button forever.
+        await query.answer(NO_SUCH_OFFICE, show_alert=True)
+        return
+    await _replace(query, *screen)
 
 
 @router.callback_query(F.data.startswith("adm:oclose:"))
@@ -1258,8 +1266,12 @@ async def _set_open(
             services.office_jobs.drop_office(office_id)
 
     screen = office_settings_screen(services, office_id, owner=_is_owner(services, query))
-    if screen is not None:
-        await _replace(query, *screen)
+    if screen is None:
+        # `query.answer()` lives inside `_replace`; skipping it leaves the client
+        # spinning on the button forever.
+        await query.answer(NO_SUCH_OFFICE, show_alert=True)
+        return
+    await _replace(query, *screen)
 
 
 @router.callback_query(F.data.startswith("adm:odrop:"))
