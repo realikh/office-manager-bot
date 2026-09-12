@@ -449,14 +449,16 @@ async def apply_username(message: Message, state: FSMContext, services: BotConte
 def _find(services: BotContext, employee_id: str) -> tuple[str, Employee] | None:
     """The employee and the office they belong to.
 
-    Office membership lives on the database row rather than on the entity, so finding it
-    means asking each office. With two of them that is cheaper than another port method.
+    Two indexed lookups. This used to scan every active office's roster, which also made
+    a closed office's people unreachable — fine by accident when no office could be
+    closed, wrong now that one can be: an admin fixing a name on a closed office is a
+    perfectly ordinary thing to want.
     """
-    for office in services.offices.active_offices():
-        for employee in services.offices.employees(office.id):
-            if employee.id == employee_id:
-                return office.id, employee
-    return None
+    employee = services.offices.get_employee(employee_id)
+    if employee is None:
+        return None
+    office_id = services.offices.office_of(employee_id)
+    return (office_id, employee) if office_id is not None else None
 
 
 @router.callback_query(F.data.startswith("adm:desks:"))

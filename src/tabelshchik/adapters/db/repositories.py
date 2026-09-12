@@ -54,10 +54,34 @@ class SqlOfficeStore(SqlRepository):
             ).all()
             return [_to_office(row) for row in rows]
 
+    def all_offices(self) -> Sequence[Office]:
+        with session_scope(self._sessions) as session:
+            rows = session.scalars(select(models.Office).order_by(models.Office.id)).all()
+            return [_to_office(row) for row in rows]
+
     def get_office(self, office_id: str) -> Office | None:
         with session_scope(self._sessions) as session:
             row = session.get(models.Office, office_id)
             return _to_office(row) if row else None
+
+    def get_employee(self, employee_id: str) -> Employee | None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.Employee, employee_id)
+            return _to_employee(row) if row else None
+
+    def office_of(self, employee_id: str) -> str | None:
+        """One indexed lookup, replacing a scan of every office's roster.
+
+        Office membership lives on the employee row rather than on the entity, so this
+        used to be answered by iterating `active_offices()` and looking for the person —
+        in three separate places, each of which quietly also filtered out anyone whose
+        office was closed. That filter is a real rule and now lives at the callers that
+        mean it, rather than being a side effect of how the lookup happened to be done.
+        """
+        with session_scope(self._sessions) as session:
+            return session.scalar(
+                select(models.Employee.office_id).where(models.Employee.id == employee_id)
+            )
 
     def employees(self, office_id: str) -> Sequence[Employee]:
         with session_scope(self._sessions) as session:

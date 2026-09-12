@@ -52,10 +52,15 @@ def _employee(services: BotContext, user_id: int | None) -> Employee | None:
 
 
 def _office_of(services: BotContext, employee_id: str) -> str | None:
-    for office in services.offices.active_offices():
-        if any(e.id == employee_id for e in services.offices.employees(office.id)):
-            return office.id
-    return None
+    """Their office, if it is still open.
+
+    The open check is deliberate rather than incidental: self-service shows the office's
+    week and accepts absences against it, and a closed office has neither.
+    """
+    office_id = services.offices.office_of(employee_id)
+    if office_id is None:
+        return None
+    return office_id if any(o.id == office_id for o in services.offices.active_offices()) else None
 
 
 def render_my_days(services: BotContext, user_id: int | None) -> str:

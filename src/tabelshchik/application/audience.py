@@ -78,7 +78,7 @@ def resolve(
         return Grant(Audience.STRANGER)
 
     employee = linked(offices, user_id, today)
-    home = _office_of(offices, employee) if employee is not None else None
+    home = _home_office(offices, employee, active) if employee is not None else None
 
     if user_id in admin_ids:
         # An admin who is not on any roster still needs an office to ask about.
@@ -151,12 +151,19 @@ def linked(offices: OfficeStore, user_id: int | None, today: date) -> Employee |
     return found if found is not None and found.in_tenure(today) else None
 
 
-def _office_of(offices: OfficeStore, employee: Employee) -> str | None:
-    """Office membership lives on the database row, not on the entity, so this asks."""
-    for office in offices.active_offices():
-        if any(person.id == employee.id for person in offices.employees(office.id)):
-            return office.id
-    return None
+def _home_office(offices: OfficeStore, employee: Employee, active: Sequence[Office]) -> str | None:
+    """The office this person belongs to, if it is still open.
+
+    Office membership lives on the database row, not on the entity, so this asks. The
+    *open* half used to be an accident: this scanned `active_offices()`, so somebody
+    whose office was closed fell out without anybody deciding that they should. Closing
+    an office is now a button, so the rule is written down rather than inferred — a
+    closed office answers nobody, and belonging to one is not a credential.
+    """
+    home = offices.office_of(employee.id)
+    if home is None or not any(office.id == home for office in active):
+        return None
+    return home
 
 
 def _first(active: Sequence[Office]) -> str | None:
