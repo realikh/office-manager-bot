@@ -543,8 +543,20 @@ async def fixed_day(query: CallbackQuery, services: BotContext) -> None:
 
 @router.callback_query(F.data.startswith("adm:fixtog:"))
 async def toggle_fixed(query: CallbackQuery, services: BotContext) -> None:
-    _, _, office_id, weekday_raw, employee_id = str(query.data).split(":", 4)
+    """The office is derived from the person, not carried alongside them.
+
+    Carrying both cost `14 + len(office) + len(employee)` bytes of a 64-byte budget, so a
+    40-character employee id and a 16-character office id already overflowed it — which
+    it survived only because the real slugs are short. Offices are about to be named by
+    whoever creates them, so the id stops riding here.
+    """
+    _, _, weekday_raw, employee_id = str(query.data).split(":", 3)
     weekday = int(weekday_raw)
+
+    office_id = services.offices.office_of(employee_id)
+    if office_id is None:
+        await query.answer("Сотрудник не найден", show_alert=True)
+        return
 
     now_fixed = services.roster.toggle_fixed(office_id, weekday, employee_id)
     services.audit.record(
@@ -824,8 +836,8 @@ async def _send_workbook(
 # parse `query.data` and call these; handlers never call each other.
 #
 # That rule exists because they used to. Pressing a `adm:fixtog:…` button ran the toggle
-# and then called `fixed_day`, which re-parsed `query.data` — by then five segments, not
-# four — and raised. The write had already succeeded, so the checkbox was right the next
+# and then called `fixed_day`, which re-parsed `query.data` — by then a toggle and not a
+# day — and raised. The write had already succeeded, so the checkbox was right the next
 # time the screen was opened and never on the tap itself. `cycle_desks` had the same
 # shape and looked up an office named "0". A screen built from arguments cannot do this.
 
@@ -880,7 +892,7 @@ def fixed_day_screen(
         (
             _button(
                 f"{'✅' if employee.id in assigned else '▫️'} {employee.full_name}",
-                f"adm:fixtog:{office_id}:{weekday}:{employee.id}",
+                f"adm:fixtog:{weekday}:{employee.id}",
             ),
         )
         for employee in sorted(

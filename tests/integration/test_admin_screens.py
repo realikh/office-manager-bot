@@ -12,6 +12,7 @@ from __future__ import annotations
 import re
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -25,19 +26,25 @@ from tabelshchik.adapters.telegram.routers.admin import (
     office_screen,
     roster_screen,
 )
+from tabelshchik.application.ids import MAX_ID_LENGTH, MAX_OFFICE_ID_LENGTH
 from tabelshchik.application.voice import MoodPolicy, Voice
 from tabelshchik.bootstrap.mapping import catalog
 from tabelshchik.config.loader import parse_file
 from tabelshchik.config.messages import MessagesConfig
 from tabelshchik.domain.mood import Mood
 
-from .conftest import seed
+from .conftest import office_seed, seed
 
 NOW = datetime(2026, 9, 11, 12, 0)
 CATALOG = catalog(parse_file(Path("config/messages.yaml"), MessagesConfig))
 MONDAY = 0
 
 ADMIN_SOURCE = Path("src/tabelshchik/adapters/telegram/routers/admin.py").read_text("utf-8")
+
+#: Read out of the source rather than listed here. A hard-coded list silently exempts
+#: every flow added after it was written, which is exactly the class of flow these tests
+#: exist to catch.
+STATE_GROUPS = frozenset(re.findall(r"class (\w+)\(StatesGroup\)", ADMIN_SOURCE))
 
 
 class Ctx:
@@ -95,14 +102,18 @@ def test_the_heading_counts_what_is_ticked(ctx) -> None:
     assert "отмечено 1" in fixed_day_screen(ctx, "ovest", MONDAY)[0]
 
 
-def test_a_toggle_button_carries_the_office_the_weekday_and_the_person(ctx) -> None:
+def test_a_toggle_button_carries_the_weekday_and_the_person_but_not_the_office(ctx) -> None:
+    """The office is derived from the person.
+
+    Carrying both spent `14 + len(office) + len(employee)` of a 64-byte budget, so a
+    long office name plus a long employee id silently produced a dead button. Nothing
+    about the office may come back into this string.
+    """
     data = [
         item for item in callbacks(fixed_day_screen(ctx, "ovest", MONDAY)[1]) if "fixtog" in item
     ]
-    assert "adm:fixtog:ovest:0:anya" in data
-    assert all(
-        len(item.encode()) <= 64 for item in callbacks(fixed_day_screen(ctx, "ovest", MONDAY)[1])
-    )
+    assert "adm:fixtog:0:anya" in data
+    assert not any("ovest" in item for item in data)
 
 
 def test_departed_people_are_not_offered(ctx) -> None:
@@ -203,11 +214,12 @@ def test_no_free_text_step_accepts_a_command() -> None:
     order now puts cancel first, but order alone is one reordering away from breaking:
     every step that reads free text must refuse a command itself.
     """
+    groups = "|".join(sorted(STATE_GROUPS))
     bodies = re.split(r"\n(?=@router\.)", ADMIN_SOURCE)
     offenders = [
         body.split("async def ")[1].split("(")[0]
         for body in bodies
-        if re.search(r"@router\.message\((?:SetDesks|AddEmployee|EditEmployee)\.", body)
+        if re.search(rf"@router\.message\((?:{groups})\.", body)
         and "_refused_a_command(message)" not in body
     ]
     assert not offenders, f"state handlers that would swallow a command: {offenders}"
@@ -217,8 +229,9 @@ def test_the_cancel_handler_is_registered_before_any_state_handler() -> None:
     """Belt to the guard's braces: aiogram dispatches in registration order."""
     cancel = ADMIN_SOURCE.index("async def cancel_admin_flow")
     first_state = min(
-        ADMIN_SOURCE.index(f"@router.message({state}.")
-        for state in ("SetDesks", "AddEmployee", "EditEmployee")
+        ADMIN_SOURCE.index(f"@router.message({group}.")
+        for group in STATE_GROUPS
+        if f"@router.message({group}." in ADMIN_SOURCE
     )
     assert cancel < first_state
 
@@ -250,3 +263,59 @@ def test_no_handler_redraws_by_calling_another_handler() -> None:
         if callee != caller and re.search(rf"await {callee}\(query", body)
     ]
     assert not offenders, f"redraw by calling a sibling handler: {offenders}"
+
+
+# ------------------------------------------------------------------- callback budget
+
+
+def test_no_callback_prefix_shadows_another() -> None:
+    """Dispatch is `startswith` in registration order, so a prefix of a prefix wins.
+
+    `adm:emp:` and `adm:empadd:` only coexist because both filters carry the trailing
+    colon; drop it from either and every `adm:empadd:…` tap runs the roster handler
+    instead. The rule was folklore until this test.
+    """
+    literals = set(re.findall(r'F\.data(?:\s*==\s*|\.startswith\()"([^"]+)"', ADMIN_SOURCE))
+    assert literals, "no callback literals found — has the filter style changed?"
+
+    shadowed = [
+        (outer, inner)
+        for outer in literals
+        for inner in literals
+        if outer != inner and outer.startswith(inner)
+    ]
+    assert not shadowed, f"callback prefixes that swallow each other: {shadowed}"
+
+
+def test_every_callback_a_screen_emits_fits_telegram_s_limit(sessions) -> None:
+    """64 bytes, total. Over it the button is simply dead, with no error anywhere.
+
+    Worst case, not the ids that happen to be seeded: an office named by whoever created
+    it and a person with a long name are both ordinary, and together they are what broke
+    `adm:fixtog:`.
+    """
+    long_office = "o" * MAX_OFFICE_ID_LENGTH
+    long_employee = "e" * MAX_ID_LENGTH
+    seed(
+        sessions,
+        office_seed(
+            id=long_office,
+            name="Длинный",
+            employees=[{"id": long_employee, "name": "Длинное Имя"}],
+            schedule={"vacantDesks": {"monday": 1}},
+        ),
+    )
+    # `Ctx` is deliberately partial, exactly as the fixture's callers get it.
+    ctx: Any = Ctx(sessions)
+
+    screens = [
+        office_screen(ctx, long_office),
+        desks_screen(ctx, long_office),
+        fixed_screen(ctx, long_office),
+        fixed_day_screen(ctx, long_office, MONDAY),
+        roster_screen(ctx, long_office),
+    ]
+    for screen in screens:
+        assert screen is not None
+        for data in callbacks(screen[1]):
+            assert len(data.encode()) <= 64, f"{data} is {len(data.encode())} bytes"

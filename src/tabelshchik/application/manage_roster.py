@@ -19,10 +19,10 @@ or a leaver whose desk sits empty for a fortnight, is the same bug in two direct
 from __future__ import annotations
 
 import re
-import unicodedata
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from tabelshchik.application.ids import unique_id
 from tabelshchik.application.policy import SchedulePolicy
 from tabelshchik.application.ports import (
     AuditLog,
@@ -35,61 +35,7 @@ from tabelshchik.application.ports import (
 from tabelshchik.application.regenerate_schedule import regenerate
 from tabelshchik.domain.entities import AssignmentStatus, Employee, Gender
 
-#: Ids ride inside `adm:` callback data, which Telegram caps at 64 bytes in total. Well
-#: under the 63 the config schema allows, so a generated id can never be the thing that
-#: makes a button silently stop working.
-MAX_ID_LENGTH = 40
-
 _USERNAME = re.compile(r"^[A-Za-z0-9_]{5,32}$")
-_SEPARATORS = re.compile(r"[^a-z0-9]+")
-
-#: Cyrillic to Latin, so "Жания Жакипова" becomes a readable slug rather than an empty
-#: string. Practical transliteration, not a standard: this only has to produce a stable,
-#: legible identifier.
-_TRANSLIT = {
-    "а": "a",
-    "б": "b",
-    "в": "v",
-    "г": "g",
-    "д": "d",
-    "е": "e",
-    "ё": "e",
-    "ж": "zh",
-    "з": "z",
-    "и": "i",
-    "й": "y",
-    "к": "k",
-    "л": "l",
-    "м": "m",
-    "н": "n",
-    "о": "o",
-    "п": "p",
-    "р": "r",
-    "с": "s",
-    "т": "t",
-    "у": "u",
-    "ф": "f",
-    "х": "kh",
-    "ц": "ts",
-    "ч": "ch",
-    "ш": "sh",
-    "щ": "sch",
-    "ъ": "",
-    "ы": "y",
-    "ь": "",
-    "э": "e",
-    "ю": "yu",
-    "я": "ya",
-    "і": "i",
-    "ң": "n",
-    "ғ": "g",
-    "ү": "u",
-    "ұ": "u",
-    "қ": "q",
-    "ө": "o",
-    "һ": "h",
-    "ә": "a",
-}
 
 
 class RosterError(ValueError):
@@ -134,7 +80,10 @@ def add_employee(
         raise RosterError(f"Ник @{handle} уже занят другим сотрудником.")
 
     taken = {employee.id for employee in offices.employees(office_id)}
-    employee_id = unique_id(name, taken)
+    try:
+        employee_id = unique_id(name, taken)
+    except ValueError as error:
+        raise RosterError("Слишком много однофамильцев — задайте имя иначе.") from error
 
     roster.add_employee(
         office_id,
@@ -274,41 +223,6 @@ def set_username(
 
 
 # ------------------------------------------------------------------------------ helpers
-
-
-def slugify(name: str) -> str:
-    """`Жания Жакипова` -> `zhaniya-zhakipova`, matching the ids already in the seeds."""
-    lowered = unicodedata.normalize("NFKC", name).casefold()
-    latin = "".join(_TRANSLIT.get(character, character) for character in lowered)
-    stripped = "".join(
-        character
-        for character in unicodedata.normalize("NFKD", latin)
-        if not unicodedata.combining(character)
-    )
-    slug = _SEPARATORS.sub("-", stripped).strip("-")
-    return slug[:MAX_ID_LENGTH].strip("-")
-
-
-def unique_id(name: str, taken: set[str]) -> str:
-    """A slug nobody is using, or a numbered one if the obvious choice is gone.
-
-    ``SqlRosterStore.add_employee`` performs no such check; a collision there surfaces as
-    an IntegrityError out of a session scope, which is neither catchable at the call site
-    nor legible to the admin who pressed the button.
-    """
-    base = slugify(name)
-    if not base:
-        # Nothing transliterable — an id still has to satisfy the identifier pattern.
-        base = "employee"
-    if base not in taken:
-        return base
-
-    for suffix in range(2, 100):
-        tail = f"-{suffix}"
-        candidate = f"{base[: MAX_ID_LENGTH - len(tail)].strip('-')}{tail}"
-        if candidate not in taken:
-            return candidate
-    raise RosterError("Слишком много однофамильцев — задайте имя иначе.")
 
 
 def normalise_username(username: str | None) -> str | None:

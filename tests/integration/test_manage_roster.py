@@ -18,7 +18,8 @@ from tabelshchik.adapters.db.repositories import (
     SqlScheduleStore,
 )
 from tabelshchik.application import manage_roster
-from tabelshchik.application.manage_roster import RosterError, slugify, unique_id
+from tabelshchik.application.ids import MAX_ID_LENGTH, slugify, unique_id
+from tabelshchik.application.manage_roster import RosterError
 from tabelshchik.application.policy import SchedulePolicy
 from tabelshchik.application.regenerate_schedule import regenerate
 
@@ -88,7 +89,7 @@ def test_punctuation_and_spacing_collapse() -> None:
 
 
 def test_an_id_is_never_longer_than_a_callback_can_carry() -> None:
-    assert len(slugify("Константин" * 10)) <= manage_roster.MAX_ID_LENGTH
+    assert len(slugify("Константин" * 10)) <= MAX_ID_LENGTH
 
 
 def test_a_collision_gets_a_number_not_an_integrity_error() -> None:
