@@ -1,0 +1,17 @@
+# Office files are an import format, not configuration, and they carry real names and
+# Telegram handles. They are git-ignored, so a VM build never sees them — this is what
+# keeps a *local* build from baking somebody's working copy into an image.
+config/offices/
+
+# Nothing below is needed to run the bot, and .venv would be the wrong platform anyway.
+.git/
+.venv/
+data/
+out/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.import_linter_cache/
+.env
