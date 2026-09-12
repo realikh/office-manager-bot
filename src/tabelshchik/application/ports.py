@@ -143,6 +143,19 @@ class AdminStore(Protocol):
     def transfer_ownership(self, *, to_user_id: int, at: datetime) -> int | None: ...
 
 
+class OfficeJobs(Protocol):
+    """Adding or removing an office's scheduled work without a restart.
+
+    Per-office jobs are registered when the bot boots, so an office created this morning
+    would otherwise sit silent until the next deploy — and a closed one would keep its
+    reminders. The handlers check `active` too; this is what keeps the scheduler honest
+    rather than relying on every job to opt out.
+    """
+
+    def add_office(self, office_id: str) -> None: ...
+    def drop_office(self, office_id: str) -> None: ...
+
+
 class OfficeAdminStore(Protocol):
     """Creating and retiring offices, as opposed to editing what is inside one.
 

@@ -32,6 +32,7 @@ from tabelshchik.application.ports import (
     MessageCache,
     Notifier,
     OfficeAdminStore,
+    OfficeJobs,
     OfficeStore,
     RosterStore,
     ScheduleStore,
@@ -54,6 +55,9 @@ class BotContext(Protocol):
     offices: OfficeStore
     admins: AdminStore
     office_admin: OfficeAdminStore
+    #: None in tests and in CLI commands, where no scheduler is running. Every call site
+    #: guards for it rather than assuming the bot is up.
+    office_jobs: OfficeJobs | None
     schedule: ScheduleStore
     ledger: LedgerStore
     absences: AbsenceStore
@@ -64,6 +68,9 @@ class BotContext(Protocol):
     jobs: JobLedger
     audit: AuditLog
     maintenance: MaintenanceStore
+
+    @property
+    def app_timezone(self) -> str: ...
 
     @property
     def schedule_policy(self) -> SchedulePolicy: ...

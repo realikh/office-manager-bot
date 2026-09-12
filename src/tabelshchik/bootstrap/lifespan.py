@@ -24,7 +24,7 @@ from tabelshchik.adapters.telegram.bot import create_bot, create_dispatcher
 from tabelshchik.adapters.telegram.commands import publish_commands
 from tabelshchik.adapters.telegram.notifier import TelegramNotifier
 from tabelshchik.bootstrap.container import Services
-from tabelshchik.bootstrap.jobs import alerting, register_jobs
+from tabelshchik.bootstrap.jobs import LiveOfficeJobs, alerting, register_jobs
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,10 @@ async def lifespan(services: Services) -> AsyncIterator[Runtime]:
         on_failure=alerting(services),
     )
     register_jobs(runner, services)
+    # So an office created from the bot gets its reminders today rather than at the next
+    # deploy. Only meaningful while a scheduler is running, which is why it is set here
+    # and stays None for tests and CLI commands.
+    services.office_jobs = LiveOfficeJobs(runner, services)
 
     # Seed first. A catch-up that runs before the schedule exists finds nothing to
     # announce, marks the occurrence done, and so swallows the very reminder it is

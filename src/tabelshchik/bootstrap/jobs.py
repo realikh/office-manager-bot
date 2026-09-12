@@ -23,45 +23,74 @@ from tabelshchik.bootstrap.container import Services
 logger = logging.getLogger(__name__)
 
 
-def register_jobs(runner: JobRunner, services: Services) -> None:
+def office_jobs(services: Services, office_id: str) -> list[Job]:
+    """The three jobs one office needs.
+
+    Its own function so boot and "an office was just created" build the same list. Every
+    trigger takes `app.timezone` explicitly: without it CronTrigger inherits the host's
+    zone, and while scheduled firing survives that, the catch-up sweep evaluates the
+    trigger directly and silently replays nothing.
+    """
     app = services.app
     attendance = app.reminders.attendance
+    return [
+        Job(
+            name="attendance",
+            scope=office_id,
+            trigger=daily_at(
+                attendance.time.hour,
+                attendance.time.minute,
+                weekdays=attendance.weekdays,
+                timezone=app.timezone,
+            ),
+            handler=_attendance_handler(services, office_id),
+        ),
+        Job(
+            name="tempo",
+            scope=office_id,
+            trigger=daily_at(9, 0, timezone=app.timezone),
+            handler=_tempo_handler(services, office_id),
+        ),
+        Job(
+            name="extend",
+            scope=office_id,
+            trigger=daily_at(
+                app.schedule.auto_extend.time.hour,
+                app.schedule.auto_extend.time.minute,
+                weekdays=frozenset({app.schedule.auto_extend.weekday_number}),
+                timezone=app.timezone,
+            ),
+            handler=_extend_handler(services, office_id),
+        ),
+    ]
+
+
+class LiveOfficeJobs:
+    """Adds and removes an office's jobs while the bot is running.
+
+    Lives here because it needs both the runner and the container, and `bootstrap` is the
+    only layer allowed to know about both. Handlers reach it through the `OfficeJobs`
+    protocol on `BotContext`.
+    """
+
+    def __init__(self, runner: JobRunner, services: Services) -> None:
+        self._runner = runner
+        self._services = services
+
+    def add_office(self, office_id: str) -> None:
+        for job in office_jobs(self._services, office_id):
+            self._runner.add_live(job)
+
+    def drop_office(self, office_id: str) -> None:
+        self._runner.drop(scope=office_id)
+
+
+def register_jobs(runner: JobRunner, services: Services) -> None:
+    app = services.app
 
     for office in services.offices.active_offices():
-        runner.add(
-            Job(
-                name="attendance",
-                scope=office.id,
-                trigger=daily_at(
-                    attendance.time.hour,
-                    attendance.time.minute,
-                    weekdays=attendance.weekdays,
-                    timezone=app.timezone,
-                ),
-                handler=_attendance_handler(services, office.id),
-            )
-        )
-        runner.add(
-            Job(
-                name="tempo",
-                scope=office.id,
-                trigger=daily_at(9, 0, timezone=app.timezone),
-                handler=_tempo_handler(services, office.id),
-            )
-        )
-        runner.add(
-            Job(
-                name="extend",
-                scope=office.id,
-                trigger=daily_at(
-                    app.schedule.auto_extend.time.hour,
-                    app.schedule.auto_extend.time.minute,
-                    weekdays=frozenset({app.schedule.auto_extend.weekday_number}),
-                    timezone=app.timezone,
-                ),
-                handler=_extend_handler(services, office.id),
-            )
-        )
+        for job in office_jobs(services, office.id):
+            runner.add(job)
 
     runner.add(
         Job(

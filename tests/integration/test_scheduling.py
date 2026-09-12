@@ -290,3 +290,53 @@ def test_every_scheduled_job_pins_its_timezone(sessions, tmp_path) -> None:
             )
     finally:
         services.engine.dispose()
+
+
+# ------------------------------------------------------- jobs added while bot is running
+
+
+async def test_an_office_created_today_gets_its_jobs_today(sessions) -> None:
+    """`add` only appends to the list `start` reads once.
+
+    Without `add_live`, an office created from the bot this morning has no attendance
+    reminder until the next deploy — the "looks configured, does nothing" failure this
+    codebase keeps running into.
+    """
+    live = runner(sessions)
+    live.start()
+    try:
+        live.add_live(
+            Job(
+                name="attendance",
+                scope="new-office",
+                trigger=daily_at(15, 30, timezone="UTC"),
+                handler=_nothing,
+            )
+        )
+        assert "attendance:new-office" in _scheduled(live)
+    finally:
+        live.shutdown()
+
+
+async def test_closing_an_office_takes_its_jobs_off_the_scheduler(sessions) -> None:
+    live = runner(sessions)
+    for name in ("attendance", "tempo"):
+        live.add(
+            Job(name=name, scope="ovest", trigger=daily_at(9, 0, timezone="UTC"), handler=_nothing)
+        )
+    live.add(Job(name="prune", trigger=daily_at(3, 30, timezone="UTC"), handler=_nothing))
+    live.start()
+    try:
+        live.drop(scope="ovest")
+        assert _scheduled(live) == ["prune"]
+        assert [item.name for item in live.jobs] == ["prune"]
+    finally:
+        live.shutdown()
+
+
+def _scheduled(runner: JobRunner) -> list[str]:
+    return sorted(job_id for job_id, _next in runner.next_runs())
+
+
+async def _nothing(_context) -> None:
+    return None

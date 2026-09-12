@@ -60,6 +60,7 @@ from tabelshchik.application.ports import (
     MoodStore,
     Notifier,
     OfficeAdminStore,
+    OfficeJobs,
     OfficeStore,
     RosterStore,
     ScheduleStore,
@@ -96,6 +97,9 @@ class Services:
     clock: Clock
     voice: Voice
     notifier: Notifier | None = None
+    #: Set by `lifespan` once the scheduler exists, so an office created from the bot
+    #: gets its reminders without waiting for a redeploy. None in tests and CLI commands.
+    office_jobs: OfficeJobs | None = None
     #: Learned from Telegram at startup; needed to recognise an @mention.
     bot_username: str = ""
 
@@ -137,6 +141,10 @@ class Services:
     @property
     def app(self) -> AppConfig:
         return self.config.app
+
+    @property
+    def app_timezone(self) -> str:
+        return self.app.timezone
 
     @property
     def schedule_policy(self) -> SchedulePolicy:

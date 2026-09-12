@@ -67,9 +67,11 @@ def grant_picker(entries: Sequence[tuple[int, str]]) -> InlineKeyboardMarkup:
 
 
 def office_list(
-    offices: Sequence[tuple[str, str]], *, action: str = "adm:office"
+    offices: Sequence[tuple[str, str]], *, action: str = "adm:office", create: bool = False
 ) -> InlineKeyboardMarkup:
     rows = [(button(name, f"{action}:{office_id}"),) for office_id, name in offices]
+    if create:
+        rows.append((button("➕ Создать офис", "adm:onew"),))
     return keyboard(*rows, (button("‹ Назад", "adm:menu"),))
 
 
@@ -82,8 +84,51 @@ def office_menu(office_id: str) -> InlineKeyboardMarkup:
         (button("🎲 Перемешать заново", f"adm:reseed:{office_id}"),),
         (button("👀 Предпросмотр", f"adm:preview:{office_id}"),),
         (button("✉️ Тестовое напоминание", f"adm:test:{office_id}"),),
+        (button("⚙️ Настройки офиса", f"adm:oset:{office_id}"),),
         (button("‹ Назад", "adm:offices"),),
     )
+
+
+def office_settings_menu(office_id: str, *, owner: bool, active: bool) -> InlineKeyboardMarkup:
+    """Everything structural about an office, one level below the everyday screen.
+
+    Closing and deleting live here rather than beside «Перегенерировать» — the two are a
+    thumb's width apart and one of them cannot be undone.
+    """
+    rows = [
+        (button("✏️ Переименовать", f"adm:orename:{office_id}"),),
+        (button("💬 Чат офиса", f"adm:ochat:{office_id}"),),
+        (button("📅 Производственный календарь", f"adm:ocal:{office_id}"),),
+    ]
+    if owner:
+        rows.append(
+            (button("♻️ Открыть снова", f"adm:oopen:{office_id}"),)
+            if not active
+            else (button("🚪 Закрыть офис", f"adm:oclose:{office_id}"),)
+        )
+        rows.append((button("🗑 Удалить навсегда", f"adm:odrop:{office_id}"),))
+    return keyboard(*rows, (button("‹ Назад", f"adm:office:{office_id}"),))
+
+
+def chat_menu(office_id: str, *, bound: bool) -> InlineKeyboardMarkup:
+    rows = [(button("✍️ Ввести id вручную", f"adm:ochatid:{office_id}"),)]
+    if bound:
+        rows.append((button("🚫 Отвязать", f"adm:ochatno:{office_id}"),))
+    return keyboard(*rows, (button("‹ Назад", f"adm:oset:{office_id}"),))
+
+
+def calendar_picker(office_id: str, codes: Sequence[str], current: str) -> InlineKeyboardMarkup:
+    """A fixed list, never free text.
+
+    An unknown country code makes the holiday library return nothing at all, so a typo
+    would be a silent "no public holidays, ever" — which nobody would notice until a
+    public holiday came and went with the office scheduled as usual.
+    """
+    rows = [
+        (button(f"{'✅' if code == current else '▫️'} {code}", f"adm:ocalpick:{office_id}:{code}"),)
+        for code in codes
+    ]
+    return keyboard(*rows, (button("‹ Назад", f"adm:oset:{office_id}"),))
 
 
 def employee_list(office_id: str, entries: Sequence[tuple[str, str]]) -> InlineKeyboardMarkup:

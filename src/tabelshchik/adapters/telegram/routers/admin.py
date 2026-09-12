@@ -25,7 +25,9 @@ from tabelshchik.adapters.telegram.keyboards import (
     WEEKDAY_LABELS,
     admin_card,
     admin_list,
+    calendar_picker,
     cancel_keyboard,
+    chat_menu,
     confirm,
     employee_card,
     employee_list,
@@ -35,12 +37,14 @@ from tabelshchik.adapters.telegram.keyboards import (
     main_menu,
     office_list,
     office_menu,
+    office_settings_menu,
     weekday_picker,
 )
-from tabelshchik.application import manage_admins, manage_roster
+from tabelshchik.application import manage_admins, manage_offices, manage_roster
 from tabelshchik.application.build_report import ReportDay, build_report
 from tabelshchik.application.context import BotContext
 from tabelshchik.application.manage_admins import AdminError
+from tabelshchik.application.manage_offices import OfficeError
 from tabelshchik.application.manage_roster import RosterError
 from tabelshchik.application.regenerate_schedule import regenerate
 from tabelshchik.application.send_attendance_reminder import send_attendance_reminder
@@ -69,6 +73,16 @@ class GrantAdmin(StatesGroup):
     waiting_for_user_id = State()
 
 
+class CreateOffice(StatesGroup):
+    waiting_for_name = State()
+
+
+class EditOffice(StatesGroup):
+    waiting_for_name = State()
+    waiting_for_chat_id = State()
+    waiting_for_deletion = State()
+
+
 SKIP = "-"
 
 #: Sanity bound on a typed desk count. There is no schema maximum, and a fat-fingered
@@ -87,10 +101,19 @@ _IN_A_FLOW = (
     EditEmployee.waiting_for_name,
     EditEmployee.waiting_for_username,
     GrantAdmin.waiting_for_user_id,
+    CreateOffice.waiting_for_name,
+    EditOffice.waiting_for_name,
+    EditOffice.waiting_for_chat_id,
+    EditOffice.waiting_for_deletion,
 )
 
 COMMAND_IN_FLOW = "Это похоже на команду. Отправьте значение или нажмите «Отмена»."
 NOT_THE_OWNER = "Это может только владелец."
+NO_SUCH_OFFICE = "Офис не найден"
+
+#: Offered as buttons rather than typed. An unknown code makes the holiday library return
+#: nothing, so a typo would be a silent "no public holidays, ever".
+CALENDARS = ("KZ", "RU", "UZ", "KG", "AZ", "GE", "AM", "TR")
 GRANT_HINT = "Если пункт /admin не появился, попросите человека написать боту /start."
 
 
@@ -174,8 +197,7 @@ async def back(query: CallbackQuery, services: BotContext) -> None:
 
 @router.callback_query(F.data == "adm:offices")
 async def offices(query: CallbackQuery, services: BotContext) -> None:
-    entries = [(office.id, office.name) for office in services.offices.active_offices()]
-    await _replace(query, "Выберите офис:", office_list(entries))
+    await _replace(query, *offices_screen(services, owner=_is_owner(services, query)))
 
 
 @router.callback_query(F.data.startswith("adm:office:"))
@@ -849,6 +871,313 @@ async def _send_workbook(
     )
 
 
+# ---------------------------------------------------------------------- office settings
+
+
+@router.callback_query(F.data.startswith("adm:oset:"))
+async def office_settings(query: CallbackQuery, services: BotContext) -> None:
+    screen = office_settings_screen(services, _tail(query), owner=_is_owner(services, query))
+    if screen is None:
+        await query.answer(NO_SUCH_OFFICE, show_alert=True)
+        return
+    await _replace(query, *screen)
+
+
+@router.callback_query(F.data == "adm:onew")
+async def start_creating_office(
+    query: CallbackQuery, services: BotContext, state: FSMContext
+) -> None:
+    if not _is_owner(services, query):
+        await query.answer(NOT_THE_OWNER, show_alert=True)
+        return
+    await query.answer()
+    await state.set_state(CreateOffice.waiting_for_name)
+    if isinstance(query.message, Message):
+        await query.message.answer(
+            "Отправьте название офиса — так, как его должны видеть сотрудники.",
+            reply_markup=cancel_keyboard(),
+        )
+
+
+@router.message(CreateOffice.waiting_for_name)
+async def apply_new_office(message: Message, state: FSMContext, services: BotContext) -> None:
+    if await _refused_a_command(message):
+        return
+    await state.clear()
+    actor_id = message.from_user.id if message.from_user else 0
+    try:
+        change = manage_offices.create_office(
+            name=message.text or "",
+            timezone=services.app_timezone,
+            actor_id=actor_id,
+            offices=services.offices,
+            office_admin=services.office_admin,
+            admins=services.admins,
+            audit=services.audit,
+        )
+    except OfficeError as error:
+        await message.answer(str(error), reply_markup=cancel_keyboard())
+        await state.set_state(CreateOffice.waiting_for_name)
+        return
+
+    await message.answer(
+        f"Офис «{html.escape(change.name)}» создан, id <code>{change.office_id}</code>.\n\n"
+        "Дальше: добавьте сотрудников, задайте свободные места, и отправьте /bind "
+        "в группе офиса, чтобы бот знал, куда писать.",
+        reply_markup=office_menu(change.office_id),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:orename:"))
+async def start_renaming_office(query: CallbackQuery, state: FSMContext) -> None:
+    await query.answer()
+    await state.set_state(EditOffice.waiting_for_name)
+    await state.update_data(office_id=_tail(query))
+    if isinstance(query.message, Message):
+        await query.message.answer(
+            "Отправьте новое название офиса.", reply_markup=cancel_keyboard()
+        )
+
+
+@router.message(EditOffice.waiting_for_name)
+async def apply_office_rename(message: Message, state: FSMContext, services: BotContext) -> None:
+    if await _refused_a_command(message):
+        return
+    data = await state.get_data()
+    office_id = str(data.get("office_id", ""))
+    try:
+        manage_offices.rename_office(
+            office_id=office_id,
+            name=message.text or "",
+            actor_id=message.from_user.id if message.from_user else 0,
+            offices=services.offices,
+            office_admin=services.office_admin,
+            audit=services.audit,
+        )
+    except OfficeError as error:
+        # A rejected name is worth retyping, not restarting.
+        await message.answer(str(error), reply_markup=cancel_keyboard())
+        return
+
+    await state.clear()
+    await message.answer("Готово.", reply_markup=office_menu(office_id))
+
+
+@router.callback_query(F.data.startswith("adm:ochat:"))
+async def office_chat(query: CallbackQuery, services: BotContext) -> None:
+    screen = chat_screen(services, _tail(query))
+    if screen is None:
+        await query.answer(NO_SUCH_OFFICE, show_alert=True)
+        return
+    await _replace(query, *screen)
+
+
+@router.callback_query(F.data.startswith("adm:ochatid:"))
+async def start_typing_chat_id(query: CallbackQuery, state: FSMContext) -> None:
+    await query.answer()
+    await state.set_state(EditOffice.waiting_for_chat_id)
+    await state.update_data(office_id=_tail(query))
+    if isinstance(query.message, Message):
+        await query.message.answer(
+            "Отправьте id группы — отрицательное число, обычно начинается с −100. "
+            "Проще отправить /bind прямо в этой группе.",
+            reply_markup=cancel_keyboard(),
+        )
+
+
+@router.message(EditOffice.waiting_for_chat_id)
+async def apply_chat_id(message: Message, state: FSMContext, services: BotContext) -> None:
+    if await _refused_a_command(message):
+        return
+    raw = (message.text or "").strip()
+    if not raw.lstrip("-").isdecimal():
+        await message.answer("Нужно число. Попробуйте ещё раз.", reply_markup=cancel_keyboard())
+        return
+
+    data = await state.get_data()
+    office_id = str(data.get("office_id", ""))
+    try:
+        manage_offices.bind_chat(
+            office_id=office_id,
+            chat_id=int(raw),
+            actor_id=message.from_user.id if message.from_user else 0,
+            offices=services.offices,
+            roster=services.roster,
+            audit=services.audit,
+        )
+    except OfficeError as error:
+        await message.answer(str(error), reply_markup=cancel_keyboard())
+        return
+
+    await state.clear()
+    await message.answer("Чат привязан.", reply_markup=office_menu(office_id))
+
+
+@router.callback_query(F.data.startswith("adm:ochatno:"))
+async def unbind_chat(query: CallbackQuery, services: BotContext) -> None:
+    office_id = _tail(query)
+    try:
+        manage_offices.bind_chat(
+            office_id=office_id,
+            chat_id=None,
+            actor_id=query.from_user.id,
+            offices=services.offices,
+            roster=services.roster,
+            audit=services.audit,
+        )
+    except OfficeError as error:
+        await query.answer(str(error), show_alert=True)
+        return
+    screen = chat_screen(services, office_id)
+    if screen is not None:
+        await _replace(query, *screen)
+
+
+@router.callback_query(F.data.startswith("adm:ocal:"))
+async def office_calendar(query: CallbackQuery, services: BotContext) -> None:
+    screen = calendar_screen(services, _tail(query))
+    if screen is None:
+        await query.answer(NO_SUCH_OFFICE, show_alert=True)
+        return
+    await _replace(query, *screen)
+
+
+@router.callback_query(F.data.startswith("adm:ocalpick:"))
+async def pick_calendar(query: CallbackQuery, services: BotContext) -> None:
+    _, _, office_id, code = str(query.data).split(":", 3)
+    try:
+        manage_offices.set_holiday_calendar(
+            office_id=office_id,
+            code=code,
+            actor_id=query.from_user.id,
+            offices=services.offices,
+            office_admin=services.office_admin,
+            audit=services.audit,
+        )
+    except OfficeError as error:
+        await query.answer(str(error), show_alert=True)
+        return
+    screen = calendar_screen(services, office_id)
+    if screen is not None:
+        await _replace(query, *screen)
+
+
+@router.callback_query(F.data.startswith("adm:oclose:"))
+async def confirm_closing(query: CallbackQuery, services: BotContext) -> None:
+    if not _is_owner(services, query):
+        await query.answer(NOT_THE_OWNER, show_alert=True)
+        return
+    office_id = _tail(query)
+    await _replace(
+        query,
+        "Закрыть офис? Он перестанет попадать в расписание и напоминания, "
+        "но все сотрудники и вся история останутся на месте — открыть обратно "
+        "можно одной кнопкой.",
+        confirm(f"adm:oclosego:{office_id}", back=f"adm:oset:{office_id}"),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:oclosego:"))
+async def close_office(query: CallbackQuery, services: BotContext) -> None:
+    await _set_open(query, services, _tail(query), open_it=False)
+
+
+@router.callback_query(F.data.startswith("adm:oopen:"))
+async def reopen_office(query: CallbackQuery, services: BotContext) -> None:
+    await _set_open(query, services, _tail(query), open_it=True)
+
+
+async def _set_open(
+    query: CallbackQuery, services: BotContext, office_id: str, *, open_it: bool
+) -> None:
+    action = manage_offices.reopen_office if open_it else manage_offices.close_office
+    try:
+        action(
+            office_id=office_id,
+            actor_id=query.from_user.id,
+            offices=services.offices,
+            office_admin=services.office_admin,
+            admins=services.admins,
+            audit=services.audit,
+        )
+    except OfficeError as error:
+        await query.answer(str(error), show_alert=True)
+        return
+
+    if services.office_jobs is not None:
+        # Per-office jobs are registered at boot, so without this a reopened office stays
+        # silent until the next deploy. The handlers also check `active`, so the two
+        # halves agree even if one of them is skipped.
+        if open_it:
+            services.office_jobs.add_office(office_id)
+        else:
+            services.office_jobs.drop_office(office_id)
+
+    screen = office_settings_screen(services, office_id, owner=_is_owner(services, query))
+    if screen is not None:
+        await _replace(query, *screen)
+
+
+@router.callback_query(F.data.startswith("adm:odrop:"))
+async def start_deleting_office(
+    query: CallbackQuery, services: BotContext, state: FSMContext
+) -> None:
+    if not _is_owner(services, query):
+        await query.answer(NOT_THE_OWNER, show_alert=True)
+        return
+    office_id = _tail(query)
+    office = services.offices.get_office(office_id)
+    if office is None:
+        await query.answer(NO_SUCH_OFFICE, show_alert=True)
+        return
+
+    await query.answer()
+    await state.set_state(EditOffice.waiting_for_deletion)
+    await state.update_data(office_id=office_id)
+    if isinstance(query.message, Message):
+        await query.message.answer(
+            "⚠️ Это удалит офис вместе со всеми сотрудниками, назначениями и историей "
+            "справедливости. Отменить будет нельзя.\n\n"
+            f"Отправьте название офиса, чтобы подтвердить: <b>{html.escape(office.name)}</b>",
+            reply_markup=cancel_keyboard(),
+        )
+
+
+@router.message(EditOffice.waiting_for_deletion)
+async def apply_deletion(message: Message, state: FSMContext, services: BotContext) -> None:
+    if await _refused_a_command(message):
+        return
+    data = await state.get_data()
+    office_id = str(data.get("office_id", ""))
+    try:
+        change = manage_offices.delete_office(
+            office_id=office_id,
+            confirmation=message.text or "",
+            actor_id=message.from_user.id if message.from_user else 0,
+            offices=services.offices,
+            office_admin=services.office_admin,
+            admins=services.admins,
+            audit=services.audit,
+        )
+    except OfficeError as error:
+        await message.answer(str(error), reply_markup=cancel_keyboard())
+        return
+
+    await state.clear()
+    if services.office_jobs is not None:
+        services.office_jobs.drop_office(office_id)
+
+    tail = ""
+    if not services.offices.active_offices():
+        # Worth saying: with no open office the audience gate has nothing to grant, so
+        # the bot answers nobody at all — admins included — until one exists again.
+        tail = "\n\nОткрытых офисов не осталось, так что бот пока никому не отвечает."
+    await message.answer(
+        f"Офис «{html.escape(change.name)}» удалён.{tail}",
+        reply_markup=main_menu(owner=_is_owner(services, message)),
+    )
+
+
 # ----------------------------------------------------------------------------- admins
 #
 # Owner-only, twice over. These handlers hide the buttons, and `manage_admins` refuses
@@ -1135,6 +1464,84 @@ def _parse_count(raw: str) -> int | None:
 def _context(services: BotContext, office_id: str):  # type: ignore[no-untyped-def]
     today = services.clock.today()
     return services.offices.planning_context(office_id, start=today, end=today)
+
+
+def offices_screen(services: BotContext, *, owner: bool) -> tuple[str, InlineKeyboardMarkup]:
+    """Closed offices are listed too, badged, or they could never be reopened."""
+    offices = services.offices.all_offices()
+    entries = [
+        (office.id, office.name if office.active else f"💤 {office.name}") for office in offices
+    ]
+    closed = sum(1 for office in offices if not office.active)
+
+    if not entries:
+        return (
+            "Офисов пока нет."
+            + ("\n\nНачните с «Создать офис»." if owner else "\n\nСоздать может только владелец."),
+            office_list(entries, create=owner),
+        )
+
+    heading = f"Выберите офис — всего {len(entries)}"
+    return (
+        heading + (f", из них закрытых {closed}." if closed else "."),
+        office_list(entries, create=owner),
+    )
+
+
+def office_settings_screen(
+    services: BotContext, office_id: str, *, owner: bool
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    found = services.offices.get_office(office_id)
+    if found is None:
+        return None
+
+    # The status belongs in the *text*: closing an office changes only which button the
+    # keyboard offers, and Telegram refuses to redraw an otherwise identical message.
+    return (
+        f"<b>{html.escape(found.name)}</b>\n"
+        f"Id: <code>{found.id}</code>\n"
+        f"Статус: {'активен' if found.active else 'закрыт'}\n"
+        f"Календарь: {found.holiday_calendar}",
+        office_settings_menu(office_id, owner=owner, active=found.active),
+    )
+
+
+def chat_screen(services: BotContext, office_id: str) -> tuple[str, InlineKeyboardMarkup] | None:
+    found = services.offices.get_office(office_id)
+    if found is None:
+        return None
+
+    sharing = [
+        other.name
+        for other in services.offices.all_offices()
+        if other.id != office_id and found.chat_id is not None and other.chat_id == found.chat_id
+    ]
+    note = ""
+    if sharing:
+        # Supported, not a mistake — but worth saying, because messages into a shared
+        # chat carry an office header and people wonder why.
+        note = "\n\nЭтот же чат у: " + ", ".join(html.escape(name) for name in sharing)
+
+    return (
+        f"<b>{html.escape(found.name)}</b>\n"
+        f"Чат: <code>{found.chat_id if found.chat_id is not None else 'не задан'}</code>\n\n"
+        "Проще всего отправить /bind в группе офиса — id чата нигде не показывается "
+        "и по памяти его не набрать." + note,
+        chat_menu(office_id, bound=found.chat_id is not None),
+    )
+
+
+def calendar_screen(
+    services: BotContext, office_id: str
+) -> tuple[str, InlineKeyboardMarkup] | None:
+    found = services.offices.get_office(office_id)
+    if found is None:
+        return None
+    return (
+        f"Производственный календарь офиса «{html.escape(found.name)}».\n"
+        f"Сейчас: <b>{found.holiday_calendar}</b>",
+        calendar_picker(office_id, CALENDARS, found.holiday_calendar),
+    )
 
 
 def admins_screen(services: BotContext, *, viewer_id: int) -> tuple[str, InlineKeyboardMarkup]:

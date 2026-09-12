@@ -31,6 +31,10 @@ logger = logging.getLogger(__name__)
 Handler = Callable[["JobContext"], Awaitable[None]]
 
 
+def _job_id(job: Job) -> str:
+    return f"{job.name}:{job.scope}" if job.scope else job.name
+
+
 @dataclass(frozen=True, slots=True)
 class JobContext:
     """What a handler is told about the run it is performing."""
@@ -74,22 +78,44 @@ class JobRunner:
     def add(self, job: Job) -> None:
         self.jobs.append(job)
 
+    def add_live(self, job: Job) -> None:
+        """Register a job on a scheduler that is already running.
+
+        `add` only appends to the list `start` reads once, so an office created from the
+        bot this morning would have had no reminders until the next deploy — the exact
+        "looks configured, does nothing" failure this project keeps running into.
+        """
+        self.jobs.append(job)
+        if self._scheduler is not None:
+            self._schedule(self._scheduler, job)
+
+    def drop(self, *, scope: str) -> None:
+        """Remove every job for one office, from the list and from a running scheduler."""
+        for job in [item for item in self.jobs if item.scope == scope]:
+            self.jobs.remove(job)
+            if self._scheduler is not None:
+                self._scheduler.remove_job(_job_id(job))
+
     def start(self) -> None:
         scheduler = AsyncIOScheduler(timezone=self.zone)
         for job in self.jobs:
-            scheduler.add_job(
-                self._run,
-                trigger=job.trigger,
-                args=[job],
-                id=f"{job.name}:{job.scope}" if job.scope else job.name,
-                # A missed fire is handled by the catch-up sweep, which knows about the
-                # ledger; APScheduler's own coalescing does not.
-                misfire_grace_time=3600,
-                coalesce=True,
-                max_instances=1,
-            )
+            self._schedule(scheduler, job)
         scheduler.start()
         self._scheduler = scheduler
+
+    def _schedule(self, scheduler: AsyncIOScheduler, job: Job) -> None:
+        scheduler.add_job(
+            self._run,
+            trigger=job.trigger,
+            args=[job],
+            id=_job_id(job),
+            # A missed fire is handled by the catch-up sweep, which knows about the
+            # ledger; APScheduler's own coalescing does not.
+            misfire_grace_time=3600,
+            coalesce=True,
+            max_instances=1,
+            replace_existing=True,
+        )
 
     def shutdown(self) -> None:
         if self._scheduler is not None:
