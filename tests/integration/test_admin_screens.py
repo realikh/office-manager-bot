@@ -220,7 +220,7 @@ def test_no_free_text_step_accepts_a_command() -> None:
         body.split("async def ")[1].split("(")[0]
         for body in bodies
         if re.search(rf"@router\.message\((?:{groups})\.", body)
-        and "_refused_a_command(message)" not in body
+        and "_refused_a_command(message, state)" not in body
     ]
     assert not offenders, f"state handlers that would swallow a command: {offenders}"
 
@@ -237,11 +237,42 @@ def test_the_cancel_handler_is_registered_before_any_state_handler() -> None:
 
 
 def test_every_free_text_prompt_offers_a_cancel_button() -> None:
-    """Because people reach for a button, and typing the command is what went wrong."""
-    prompts = re.findall(r"await query\.message\.answer\(\s*\n?(.*?)\n\s*\)", ADMIN_SOURCE, re.S)
-    asking = [text for text in prompts if "Отправьте" in text or "Имя и фамилия" in text]
-    assert asking, "no free-text prompts found — has the wording changed?"
-    assert all("cancel_keyboard()" in text for text in asking)
+    """Because people reach for a button, and typing the command is what went wrong.
+
+    This used to check nine call sites for a `cancel_keyboard()` argument. `_ask` attaches
+    it itself now, which is a stronger guarantee than one anybody could forget — so what
+    is worth checking is that the prompts all go through `_ask`, and that `_ask` still
+    carries the button.
+    """
+    body = ADMIN_SOURCE.split("async def _ask(")[1].split("\nasync def ")[0]
+    assert "cancel_keyboard()" in body, "_ask no longer attaches a way out"
+
+
+def test_no_callback_handler_hands_out_a_second_keyboard() -> None:
+    """A callback may send content — a workbook, a rendered fortnight — but never a screen.
+
+    Two messages with keyboards means two live screens, and the older one keeps working:
+    pressing a button on it acts on state that has moved on. That is what put two
+    identical office lists on screen three minutes apart, one of them stale.
+
+    `redraw` and `rehome` take their markup positionally, so a `reply_markup=` keyword
+    inside a callback body is always a keyboard being handed out directly.
+    """
+    bodies = re.split(r"\n(?=@router\.)", ADMIN_SOURCE)
+    offenders = [
+        body.split("async def ")[1].split("(")[0]
+        for body in bodies
+        if body.startswith("@router.callback_query") and "reply_markup=" in body
+    ]
+    assert not offenders, f"callback handlers sending a second keyboard: {offenders}"
+
+
+def test_every_flow_records_where_to_return() -> None:
+    """✖️ Отмена goes back where the flow started, which only works if it was told."""
+    starts = re.findall(r"await _ask\(\n(?:.*?\n)*?    \)", ADMIN_SOURCE)
+    assert starts, "no flows found — has _ask been renamed?"
+    missing = [call for call in starts if "back_to=" not in call]
+    assert not missing, f"{len(missing)} flow(s) with nowhere to go back to"
 
 
 def test_no_handler_redraws_by_calling_another_handler() -> None:

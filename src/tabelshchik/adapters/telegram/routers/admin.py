@@ -12,7 +12,6 @@ from typing import Any
 
 from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
@@ -40,6 +39,7 @@ from tabelshchik.adapters.telegram.keyboards import (
     weekday_picker,
 )
 from tabelshchik.adapters.telegram.middlewares import AdminOnly
+from tabelshchik.adapters.telegram.ui import redraw, rehome
 from tabelshchik.application import manage_admins, manage_offices, manage_roster
 from tabelshchik.application.build_report import ReportDay, build_report
 from tabelshchik.application.context import BotContext
@@ -111,6 +111,7 @@ _IN_A_FLOW = (
 COMMAND_IN_FLOW = "Это похоже на команду. Отправьте значение или нажмите «Отмена»."
 NOT_THE_OWNER = "Это может только владелец."
 NO_SUCH_OFFICE = "Офис не найден"
+NO_SUCH_EMPLOYEE = "Сотрудник не найден"
 
 #: Offered as buttons rather than typed. An unknown code makes the holiday library return
 #: nothing, so a typo would be a silent "no public holidays, ever".
@@ -125,14 +126,123 @@ async def cancel_admin_flow(message: Message, state: FSMContext, services: BotCo
     This router is registered before the employee one, but the only `/cancel` used to live
     there — so cancelling a half-finished admin wizard answered with the *employee* menu.
     """
-    await state.clear()
-    await message.answer("Отменено.", reply_markup=main_menu(owner=_is_owner(services, message)))
+    data = await state.get_data()
+    await _finish(
+        message,
+        state,
+        *_return_screen(
+            services,
+            data,
+            viewer_id=message.from_user.id if message.from_user else 0,
+            owner=_is_owner(services, message),
+        ),
+    )
 
 
 @router.callback_query(F.data == "adm:cancel")
 async def cancel_button(query: CallbackQuery, state: FSMContext, services: BotContext) -> None:
+    """Back to where the flow started, not to the top.
+
+    The prompt is the screen — `_ask` replaced it rather than stacking under it — so this
+    edits in place and there is nothing left over. It used to edit a prompt that sat
+    *below* the screen it came from, which left that screen above it, stale and live.
+    """
+    data = await state.get_data()
     await state.clear()
-    await _replace(query, "Отменено.", main_menu(owner=_is_owner(services, query)))
+    await _replace(
+        query,
+        *_return_screen(
+            services,
+            data,
+            viewer_id=query.from_user.id,
+            owner=_is_owner(services, query),
+        ),
+    )
+
+
+async def _ask(
+    query: CallbackQuery,
+    state: FSMContext,
+    step: State,
+    prompt: str,
+    *,
+    back_to: str,
+    back_arg: str = "",
+    **extra: Any,
+) -> None:
+    """Turn the current screen into a prompt, remembering how to get back.
+
+    The prompt *replaces* the screen rather than stacking under it. Two messages meant two
+    live keyboards, and ✖️ Отмена then edited the wrong one — the button is on the prompt,
+    so the screen the flow was launched from stayed above it, stale and still clickable.
+
+    `cancel_keyboard()` is attached here rather than at each call site, so a prompt with no
+    way out stops being something anybody can forget. The data is *replaced*, not merged,
+    so one flow cannot inherit a stale `back_arg` from the last one.
+    """
+    await state.set_state(step)
+    screen = await _replace(query, prompt, cancel_keyboard())
+    await state.set_data({"back_to": back_to, "back_arg": back_arg, "screen": screen, **extra})
+
+
+async def _step(message: Message, state: FSMContext, text: str, markup: Any = None) -> None:
+    """The next prompt, or a rejected answer, moved down below what was just typed."""
+    data = await state.get_data()
+    screen = await rehome(message, data.get("screen"), text, markup)
+    await state.update_data(screen=screen)
+
+
+async def _finish(message: Message, state: FSMContext, text: str, markup: Any = None) -> None:
+    """The last screen of a flow. Moves it down, then forgets the flow.
+
+    Clearing the remembered id afterwards is safe: whatever the user does next is a button
+    on the screen this just drew, and a callback redraws in place without needing it.
+    """
+    data = await state.get_data()
+    await rehome(message, data.get("screen"), text, markup)
+    await state.clear()
+
+
+def _return_screen(
+    services: BotContext, data: dict[str, Any], *, viewer_id: int, owner: bool
+) -> tuple[str, Any]:
+    """The screen a cancelled or finished flow goes back to.
+
+    A lookup over the screen builders, which already take explicit arguments — not a
+    handler calling a handler, which is the thing that breaks. `back_to` names the builder
+    and `back_arg` is what it takes.
+
+    Anything that has been deleted since the flow started falls back to the menu. Firing
+    somebody and then cancelling out of their card is an ordinary sequence, not an error.
+    """
+    tag = str(data.get("back_to", "menu"))
+    arg = str(data.get("back_arg", ""))
+    home = ("Режим администратора:", main_menu(owner=owner))
+
+    if tag in _OFFICE_SCOPED and services.offices.get_office(arg) is None:
+        return home
+
+    if tag == "offices":
+        return offices_screen(services, owner=owner)
+    if tag == "admins":
+        return admins_screen(services, viewer_id=viewer_id)
+    if tag == "roster":
+        return roster_screen(services, arg)
+    if tag == "desks":
+        return desks_screen(services, arg)
+    if tag == "card":
+        return card_screen(services, arg) or home
+    if tag == "office":
+        return office_screen(services, arg) or home
+    if tag == "settings":
+        return office_settings_screen(services, arg, owner=owner) or home
+    if tag == "chat":
+        return chat_screen(services, arg) or home
+    return home
+
+
+#: Destinations whose builder reads a planning context, which raises for a missing office.
+_OFFICE_SCOPED = frozenset({"roster", "desks", "office", "settings", "chat"})
 
 
 def _is_owner(services: BotContext, event: Message | CallbackQuery) -> bool:
@@ -140,17 +250,20 @@ def _is_owner(services: BotContext, event: Message | CallbackQuery) -> bool:
     return services.is_owner(event.from_user.id if event.from_user else None)
 
 
-async def _refused_a_command(message: Message) -> bool:
+async def _refused_a_command(message: Message, state: FSMContext) -> bool:
     """True when the message was a command, and the caller should stop.
 
     Free text is how a name, a handle and a number all arrive, so "/" is the one thing
     that can never be meant as a value. Without this, any command typed mid-flow is
     written as data — and a username pattern or an integer parser rejecting it elsewhere
     is luck, not a design.
+
+    The refusal moves the prompt down rather than appending a new one, or mashing `/`
+    would leave a column of live cancel keyboards.
     """
     if not (message.text or "").lstrip().startswith("/"):
         return False
-    await message.answer(COMMAND_IN_FLOW, reply_markup=cancel_keyboard())
+    await _step(message, state, COMMAND_IN_FLOW, cancel_keyboard())
     return True
 
 
@@ -201,39 +314,43 @@ async def _show_roster(query: CallbackQuery, services: BotContext, office_id: st
 
 @router.callback_query(F.data.startswith("adm:empadd:"))
 async def start_adding_employee(query: CallbackQuery, state: FSMContext) -> None:
-    await query.answer()
-    await state.set_state(AddEmployee.waiting_for_name)
-    await state.update_data(office_id=_tail(query))
-    if isinstance(query.message, Message):
-        await query.message.answer(
-            "Имя и фамилия нового сотрудника — как они должны выглядеть в напоминаниях.",
-            reply_markup=cancel_keyboard(),
-        )
+    office_id = _tail(query)
+    await _ask(
+        query,
+        state,
+        AddEmployee.waiting_for_name,
+        "Отправьте имя и фамилию нового сотрудника — как они должны выглядеть в напоминаниях.",
+        back_to="roster",
+        back_arg=office_id,
+        office_id=office_id,
+    )
 
 
 @router.message(AddEmployee.waiting_for_name)
 async def receive_new_name(message: Message, state: FSMContext) -> None:
-    if await _refused_a_command(message):
+    if await _refused_a_command(message, state):
         return
     await state.update_data(full_name=message.text or "")
     await state.set_state(AddEmployee.waiting_for_username)
-    await message.answer(
-        f"Telegram-ник без «@». Если его нет, отправьте «{SKIP}» — "
+    await _step(
+        message,
+        state,
+        f"Отправьте Telegram-ник без «@». Если его нет, отправьте «{SKIP}» — "
         "человек сможет привязать себя сам через /start.",
-        reply_markup=cancel_keyboard(),
+        cancel_keyboard(),
     )
 
 
 @router.message(AddEmployee.waiting_for_username)
 async def receive_new_username(message: Message, state: FSMContext) -> None:
-    if await _refused_a_command(message):
+    if await _refused_a_command(message, state):
         return
     raw = (message.text or "").strip()
     await state.update_data(username=None if raw in {SKIP, ""} else raw)
     await state.set_state(AddEmployee.waiting_for_gender)
     # Asked for, not guessed: the reminder writes a gendered epithet in front of the name,
     # and a name alone is not evidence of anything.
-    await message.answer("Пол — от него зависит род в напоминаниях:", reply_markup=gender_picker())
+    await _step(message, state, "Пол — от него зависит род в напоминаниях:", gender_picker())
 
 
 @router.callback_query(AddEmployee.waiting_for_gender, F.data.startswith("adm:empg:"))
@@ -263,51 +380,30 @@ async def finish_adding_employee(
             audit=services.audit,
         )
     except RosterError as error:
-        await query.message.answer(f"❌ {html.escape(str(error))}")
+        text, markup = roster_screen(services, office_id)
+        await _replace(query, f"❌ {html.escape(str(error))}\n\n{text}", markup)
         return
 
-    await query.message.answer(
+    text, markup = roster_screen(services, office_id)
+    await _replace(
+        query,
         f"✅ {html.escape(change.full_name)} добавлен(а), id "
-        f"<code>{html.escape(change.employee_id)}</code>. Расписание пересчитано."
+        f"<code>{html.escape(change.employee_id)}</code>. Расписание пересчитано.\n\n{text}",
+        markup,
     )
 
 
 @router.callback_query(F.data.startswith("adm:empv:"))
-async def employee_card_screen(query: CallbackQuery, services: BotContext) -> None:
+async def employee_card_view(query: CallbackQuery, services: BotContext) -> None:
     await _show_card(query, services, _tail(query))
 
 
 async def _show_card(query: CallbackQuery, services: BotContext, employee_id: str) -> None:
-    found = _find(services, employee_id)
-    if found is None:
-        await query.answer("Сотрудник не найден", show_alert=True)
+    screen = card_screen(services, employee_id)
+    if screen is None:
+        await query.answer(NO_SUCH_EMPLOYEE, show_alert=True)
         return
-    office_id, employee = found
-
-    today = services.clock.today()
-    departed = not employee.in_tenure(today)
-    upcoming = services.schedule.upcoming_for_employee(employee.id, start=today, limit=5)
-    common = services.voice.catalog.common
-
-    handle = f"@{employee.telegram_username}" if employee.telegram_username else "не задан"
-    linked = "да" if employee.telegram_user_id is not None else "нет"
-    gender = "женский" if str(employee.gender) == "female" else "мужской"
-    days = ", ".join(format_date(day, common) for day in upcoming) or "нет"
-
-    lines = [
-        f"<b>{html.escape(employee.full_name)}</b>",
-        f"id: <code>{html.escape(employee.id)}</code>",
-        f"Ник: {html.escape(handle)} · привязан: {linked}",
-        f"Род: {gender}",
-        f"Ближайшие дни: {html.escape(days)}",
-    ]
-    if departed:
-        ended = employee.ended_on.isoformat() if employee.ended_on else "—"
-        lines.append(f"<i>Уволен с {ended}</i>")
-
-    await _replace(
-        query, "\n".join(lines), employee_card(office_id, employee.id, departed=departed)
-    )
+    await _replace(query, *screen)
 
 
 @router.callback_query(F.data.startswith("adm:empfire:"))
@@ -387,27 +483,33 @@ async def restore_employee(query: CallbackQuery, services: BotContext) -> None:
 
 @router.callback_query(F.data.startswith("adm:empname:"))
 async def start_rename(query: CallbackQuery, state: FSMContext) -> None:
-    await query.answer()
-    await state.set_state(EditEmployee.waiting_for_name)
-    await state.update_data(employee_id=_tail(query))
-    if isinstance(query.message, Message):
-        await query.message.answer("Новое имя и фамилия.", reply_markup=cancel_keyboard())
+    employee_id = _tail(query)
+    await _ask(
+        query,
+        state,
+        EditEmployee.waiting_for_name,
+        "Отправьте новое имя и фамилию.",
+        back_to="card",
+        back_arg=employee_id,
+        employee_id=employee_id,
+    )
 
 
 @router.message(EditEmployee.waiting_for_name)
 async def apply_rename(message: Message, state: FSMContext, services: BotContext) -> None:
-    if await _refused_a_command(message):
+    if await _refused_a_command(message, state):
         return
     data = await state.get_data()
     employee_id = str(data.get("employee_id", ""))
     found = _find(services, employee_id)
     if found is None:
-        await state.clear()
-        await message.answer("Сотрудник не найден.")
+        await _finish(
+            message, state, NO_SUCH_EMPLOYEE, main_menu(owner=_is_owner(services, message))
+        )
         return
 
     try:
-        change = manage_roster.rename(
+        manage_roster.rename(
             office_id=found[0],
             employee_id=employee_id,
             full_name=message.text or "",
@@ -418,35 +520,37 @@ async def apply_rename(message: Message, state: FSMContext, services: BotContext
         )
     except RosterError as error:
         # Stays in the state: a rejected name is worth retyping, not restarting.
-        await message.answer(f"❌ {html.escape(str(error))}")
+        await _step(message, state, f"❌ {html.escape(str(error))}", cancel_keyboard())
         return
 
-    await state.clear()
-    await message.answer(f"✅ Теперь это {html.escape(change.full_name)}.")
+    await _finish(message, state, *_card_or_menu(services, employee_id, message))
 
 
 @router.callback_query(F.data.startswith("adm:empuser:"))
 async def start_setting_username(query: CallbackQuery, state: FSMContext) -> None:
-    await query.answer()
-    await state.set_state(EditEmployee.waiting_for_username)
-    await state.update_data(employee_id=_tail(query))
-    if isinstance(query.message, Message):
-        await query.message.answer(
-            f"Telegram-ник без «@». Отправьте «{SKIP}», чтобы очистить.",
-            reply_markup=cancel_keyboard(),
-        )
+    employee_id = _tail(query)
+    await _ask(
+        query,
+        state,
+        EditEmployee.waiting_for_username,
+        f"Отправьте Telegram-ник без «@», или «{SKIP}», чтобы очистить.",
+        back_to="card",
+        back_arg=employee_id,
+        employee_id=employee_id,
+    )
 
 
 @router.message(EditEmployee.waiting_for_username)
 async def apply_username(message: Message, state: FSMContext, services: BotContext) -> None:
-    if await _refused_a_command(message):
+    if await _refused_a_command(message, state):
         return
     data = await state.get_data()
     employee_id = str(data.get("employee_id", ""))
     found = _find(services, employee_id)
     if found is None:
-        await state.clear()
-        await message.answer("Сотрудник не найден.")
+        await _finish(
+            message, state, NO_SUCH_EMPLOYEE, main_menu(owner=_is_owner(services, message))
+        )
         return
 
     raw = (message.text or "").strip()
@@ -461,11 +565,46 @@ async def apply_username(message: Message, state: FSMContext, services: BotConte
             audit=services.audit,
         )
     except RosterError as error:
-        await message.answer(f"❌ {html.escape(str(error))}")
+        # Stays in the state, like the rename: a rejected handle is worth retyping.
+        await _step(message, state, f"❌ {html.escape(str(error))}", cancel_keyboard())
         return
 
-    await state.clear()
-    await message.answer("✅ Ник обновлён.")
+    await _finish(message, state, *_card_or_menu(services, employee_id, message))
+
+
+async def _follow(query: CallbackQuery, services: BotContext, office_id: str) -> None:
+    """Move the office screen down beneath content that was just sent.
+
+    A workbook, a rendered fortnight or a test reminder is content, and content is a new
+    message — but the screen that produced it is then stranded above, and you have to
+    scroll back up to do anything else. This brings it down to the bottom instead.
+    """
+    screen = office_screen(services, office_id)
+    if screen is not None and isinstance(query.message, Message):
+        await rehome(query.message, query.message.message_id, *screen)
+
+
+def _settings_or_menu(
+    services: BotContext, office_id: str, event: Message | CallbackQuery
+) -> tuple[str, Any]:
+    """An office's settings, or the menu if the office has gone while the flow was open.
+
+    The owner flag comes from whoever is looking: renaming an office is open to every
+    admin, and hardcoding it would hand a non-owner the close and delete buttons.
+    """
+    owner = _is_owner(services, event)
+    return office_settings_screen(services, office_id, owner=owner) or _home(owner)
+
+
+def _card_or_menu(
+    services: BotContext, employee_id: str, event: Message | CallbackQuery
+) -> tuple[str, Any]:
+    """Their card, or the admin menu if the record has gone while the flow was open."""
+    return card_screen(services, employee_id) or _home(_is_owner(services, event))
+
+
+def _home(owner: bool) -> tuple[str, Any]:
+    return ("Режим администратора:", main_menu(owner=owner))
 
 
 def _find(services: BotContext, employee_id: str) -> tuple[str, Employee] | None:
@@ -500,23 +639,23 @@ async def start_setting_desks(
     _, _, office_id, weekday_raw = str(query.data).split(":")
     weekday = int(weekday_raw)
 
-    await query.answer()
-    await state.set_state(SetDesks.waiting_for_count)
-    await state.update_data(office_id=office_id, weekday=weekday)
-
-    if isinstance(query.message, Message):
-        current = _context(services, office_id).template.desks_on(weekday)
-        name = services.voice.catalog.common.weekdays[weekday]
-        await query.message.answer(
-            f"Сколько свободных мест в {name}? Сейчас {current}.\n"
-            f"Отправьте число от 0 до {MAX_DESKS}.",
-            reply_markup=cancel_keyboard(),
-        )
+    current = _context(services, office_id).template.desks_on(weekday)
+    name = services.voice.catalog.common.weekdays[weekday]
+    await _ask(
+        query,
+        state,
+        SetDesks.waiting_for_count,
+        f"Сколько свободных мест в {name}? Сейчас {current}.\nОтправьте число от 0 до {MAX_DESKS}.",
+        back_to="desks",
+        back_arg=office_id,
+        office_id=office_id,
+        weekday=weekday,
+    )
 
 
 @router.message(SetDesks.waiting_for_count)
 async def apply_desks(message: Message, state: FSMContext, services: BotContext) -> None:
-    if await _refused_a_command(message):
+    if await _refused_a_command(message, state):
         return
     data = await state.get_data()
     office_id = str(data.get("office_id", ""))
@@ -525,7 +664,7 @@ async def apply_desks(message: Message, state: FSMContext, services: BotContext)
     count = _parse_count(message.text or "")
     if count is None:
         # Stays in the state: a mistyped number is worth retyping, not restarting.
-        await message.answer(f"Нужно целое число от 0 до {MAX_DESKS}.")
+        await _step(message, state, f"Нужно целое число от 0 до {MAX_DESKS}.", cancel_keyboard())
         return
 
     services.roster.set_vacant_desks(office_id, weekday, count)
@@ -534,7 +673,6 @@ async def apply_desks(message: Message, state: FSMContext, services: BotContext)
         action="template.desks",
         payload={"office": office_id, "weekday": weekday, "desks": count},
     )
-    await state.clear()
 
     headcount = sum(
         1
@@ -549,7 +687,7 @@ async def apply_desks(message: Message, state: FSMContext, services: BotContext)
         reply += f"\nВ офисе всего {headcount} чел., так что места останутся пустыми."
 
     text, markup = desks_screen(services, office_id)
-    await message.answer(f"{reply}\n\n{text}", reply_markup=markup)
+    await _finish(message, state, f"{reply}\n\n{text}", markup)
 
 
 @router.callback_query(F.data.startswith("adm:fix:"))
@@ -624,6 +762,7 @@ async def regenerate_office(query: CallbackQuery, services: BotContext) -> None:
     if isinstance(query.message, Message):
         await query.message.answer(summary)
         await _send_workbook(query.message, services, office_id, result)
+        await _follow(query, services, office_id)
 
 
 @router.callback_query(F.data.startswith("adm:reseed:"))
@@ -666,6 +805,7 @@ async def preview(query: CallbackQuery, services: BotContext) -> None:
     if isinstance(query.message, Message):
         for chunk in chunks or ["Ничего не запланировано."]:
             await query.message.answer(chunk)
+        await _follow(query, services, office_id)
 
 
 @router.callback_query(F.data.startswith("adm:test:"))
@@ -688,6 +828,7 @@ async def test_reminder(query: CallbackQuery, services: BotContext) -> None:
     )
     if isinstance(query.message, Message):
         await query.message.answer(outcome.text or f"Нечего отправлять ({outcome.skipped}).")
+        await _follow(query, services, office_id)
 
 
 @router.callback_query(F.data == "adm:fair")
@@ -810,6 +951,15 @@ async def backup(query: CallbackQuery, services: BotContext) -> None:
         silent=True,
     )
 
+    # The document lands below the menu, which otherwise stays exactly where it was and
+    # makes it look as though the button did nothing.
+    await rehome(
+        query.message,
+        query.message.message_id,
+        "Режим администратора:",
+        main_menu(owner=_is_owner(services, query)),
+    )
+
 
 async def _send_workbook(
     message: Message, services: BotContext, office_id: str, result: Any
@@ -879,18 +1029,18 @@ async def start_creating_office(
     if not _is_owner(services, query):
         await query.answer(NOT_THE_OWNER, show_alert=True)
         return
-    await query.answer()
-    await state.set_state(CreateOffice.waiting_for_name)
-    if isinstance(query.message, Message):
-        await query.message.answer(
-            "Отправьте название офиса — так, как его должны видеть сотрудники.",
-            reply_markup=cancel_keyboard(),
-        )
+    await _ask(
+        query,
+        state,
+        CreateOffice.waiting_for_name,
+        "Отправьте название офиса — так, как его должны видеть сотрудники.",
+        back_to="offices",
+    )
 
 
 @router.message(CreateOffice.waiting_for_name)
 async def apply_new_office(message: Message, state: FSMContext, services: BotContext) -> None:
-    if await _refused_a_command(message):
+    if await _refused_a_command(message, state):
         return
     await state.clear()
     actor_id = message.from_user.id if message.from_user else 0
@@ -905,32 +1055,36 @@ async def apply_new_office(message: Message, state: FSMContext, services: BotCon
             audit=services.audit,
         )
     except OfficeError as error:
-        await message.answer(str(error), reply_markup=cancel_keyboard())
-        await state.set_state(CreateOffice.waiting_for_name)
+        await _step(message, state, str(error), cancel_keyboard())
         return
 
-    await message.answer(
+    await _finish(
+        message,
+        state,
         f"Офис «{html.escape(change.name)}» создан, id <code>{change.office_id}</code>.\n\n"
         "Дальше: добавьте сотрудников, задайте свободные места, и отправьте /bind "
         "в группе офиса, чтобы бот знал, куда писать.",
-        reply_markup=office_menu(change.office_id),
+        office_menu(change.office_id),
     )
 
 
 @router.callback_query(F.data.startswith("adm:orename:"))
 async def start_renaming_office(query: CallbackQuery, state: FSMContext) -> None:
-    await query.answer()
-    await state.set_state(EditOffice.waiting_for_name)
-    await state.update_data(office_id=_tail(query))
-    if isinstance(query.message, Message):
-        await query.message.answer(
-            "Отправьте новое название офиса.", reply_markup=cancel_keyboard()
-        )
+    office_id = _tail(query)
+    await _ask(
+        query,
+        state,
+        EditOffice.waiting_for_name,
+        "Отправьте новое название офиса.",
+        back_to="settings",
+        back_arg=office_id,
+        office_id=office_id,
+    )
 
 
 @router.message(EditOffice.waiting_for_name)
 async def apply_office_rename(message: Message, state: FSMContext, services: BotContext) -> None:
-    if await _refused_a_command(message):
+    if await _refused_a_command(message, state):
         return
     data = await state.get_data()
     office_id = str(data.get("office_id", ""))
@@ -945,11 +1099,10 @@ async def apply_office_rename(message: Message, state: FSMContext, services: Bot
         )
     except OfficeError as error:
         # A rejected name is worth retyping, not restarting.
-        await message.answer(str(error), reply_markup=cancel_keyboard())
+        await _step(message, state, str(error), cancel_keyboard())
         return
 
-    await state.clear()
-    await message.answer("Готово.", reply_markup=office_menu(office_id))
+    await _finish(message, state, *_settings_or_menu(services, office_id, message))
 
 
 @router.callback_query(F.data.startswith("adm:ochat:"))
@@ -963,24 +1116,26 @@ async def office_chat(query: CallbackQuery, services: BotContext) -> None:
 
 @router.callback_query(F.data.startswith("adm:ochatid:"))
 async def start_typing_chat_id(query: CallbackQuery, state: FSMContext) -> None:
-    await query.answer()
-    await state.set_state(EditOffice.waiting_for_chat_id)
-    await state.update_data(office_id=_tail(query))
-    if isinstance(query.message, Message):
-        await query.message.answer(
-            "Отправьте id группы — отрицательное число, обычно начинается с −100. "
-            "Проще отправить /bind прямо в этой группе.",
-            reply_markup=cancel_keyboard(),
-        )
+    office_id = _tail(query)
+    await _ask(
+        query,
+        state,
+        EditOffice.waiting_for_chat_id,
+        "Отправьте id группы — отрицательное число, обычно начинается с −100. "
+        "Проще отправить /bind прямо в этой группе.",
+        back_to="chat",
+        back_arg=office_id,
+        office_id=office_id,
+    )
 
 
 @router.message(EditOffice.waiting_for_chat_id)
 async def apply_chat_id(message: Message, state: FSMContext, services: BotContext) -> None:
-    if await _refused_a_command(message):
+    if await _refused_a_command(message, state):
         return
     raw = (message.text or "").strip()
     if not raw.lstrip("-").isdecimal():
-        await message.answer("Нужно число. Попробуйте ещё раз.", reply_markup=cancel_keyboard())
+        await _step(message, state, "Нужно число. Попробуйте ещё раз.", cancel_keyboard())
         return
 
     data = await state.get_data()
@@ -995,11 +1150,11 @@ async def apply_chat_id(message: Message, state: FSMContext, services: BotContex
             audit=services.audit,
         )
     except OfficeError as error:
-        await message.answer(str(error), reply_markup=cancel_keyboard())
+        await _step(message, state, str(error), cancel_keyboard())
         return
 
-    await state.clear()
-    await message.answer("Чат привязан.", reply_markup=office_menu(office_id))
+    screen = chat_screen(services, office_id)
+    await _finish(message, state, *(screen or _home(_is_owner(services, message))))
 
 
 @router.callback_query(F.data.startswith("adm:ochatno:"))
@@ -1120,21 +1275,22 @@ async def start_deleting_office(
         await query.answer(NO_SUCH_OFFICE, show_alert=True)
         return
 
-    await query.answer()
-    await state.set_state(EditOffice.waiting_for_deletion)
-    await state.update_data(office_id=office_id)
-    if isinstance(query.message, Message):
-        await query.message.answer(
-            "⚠️ Это удалит офис вместе со всеми сотрудниками, назначениями и историей "
-            "справедливости. Отменить будет нельзя.\n\n"
-            f"Отправьте название офиса, чтобы подтвердить: <b>{html.escape(office.name)}</b>",
-            reply_markup=cancel_keyboard(),
-        )
+    await _ask(
+        query,
+        state,
+        EditOffice.waiting_for_deletion,
+        "⚠️ Это удалит офис вместе со всеми сотрудниками, назначениями и историей "
+        "справедливости. Отменить будет нельзя.\n\n"
+        f"Отправьте название офиса, чтобы подтвердить: <b>{html.escape(office.name)}</b>",
+        back_to="settings",
+        back_arg=office_id,
+        office_id=office_id,
+    )
 
 
 @router.message(EditOffice.waiting_for_deletion)
 async def apply_deletion(message: Message, state: FSMContext, services: BotContext) -> None:
-    if await _refused_a_command(message):
+    if await _refused_a_command(message, state):
         return
     data = await state.get_data()
     office_id = str(data.get("office_id", ""))
@@ -1149,10 +1305,9 @@ async def apply_deletion(message: Message, state: FSMContext, services: BotConte
             audit=services.audit,
         )
     except OfficeError as error:
-        await message.answer(str(error), reply_markup=cancel_keyboard())
+        await _step(message, state, str(error), cancel_keyboard())
         return
 
-    await state.clear()
     if services.office_jobs is not None:
         services.office_jobs.drop_office(office_id)
 
@@ -1161,9 +1316,9 @@ async def apply_deletion(message: Message, state: FSMContext, services: BotConte
         # Worth saying: with no open office the audience gate has nothing to grant, so
         # the bot answers nobody at all — admins included — until one exists again.
         tail = "\n\nОткрытых офисов не осталось, так что бот пока никому не отвечает."
-    await message.answer(
-        f"Офис «{html.escape(change.name)}» удалён.{tail}",
-        reply_markup=main_menu(owner=_is_owner(services, message)),
+    text, markup = offices_screen(services, owner=_is_owner(services, message))
+    await _finish(
+        message, state, f"Офис «{html.escape(change.name)}» удалён.{tail}\n\n{text}", markup
     )
 
 
@@ -1216,21 +1371,21 @@ async def start_typing_an_id(query: CallbackQuery, services: BotContext, state: 
     if not _is_owner(services, query):
         await query.answer(NOT_THE_OWNER, show_alert=True)
         return
-    await query.answer()
-    await state.set_state(GrantAdmin.waiting_for_user_id)
-    if isinstance(query.message, Message):
-        await query.message.answer(
-            "Отправьте числовой Telegram id — его подскажет @userinfobot. "
-            "Это нужно только тем, кого нет ни в одном офисе.",
-            reply_markup=cancel_keyboard(),
-        )
+    await _ask(
+        query,
+        state,
+        GrantAdmin.waiting_for_user_id,
+        "Отправьте числовой Telegram id — его подскажет @userinfobot. "
+        "Это нужно только тем, кого нет ни в одном офисе.",
+        back_to="admins",
+    )
 
 
 @router.message(GrantAdmin.waiting_for_user_id)
 async def apply_typed_id(
     message: Message, state: FSMContext, services: BotContext, bot: Bot
 ) -> None:
-    if await _refused_a_command(message):
+    if await _refused_a_command(message, state):
         return
     raw = (message.text or "").strip()
     if not raw.lstrip("-").isdecimal():
@@ -1420,6 +1575,42 @@ def fixed_day_screen(
         f"Кто всегда в офисе в {WEEKDAY_LABELS[weekday]}: отмечено {len(assigned)}.",
         keyboard(*rows, (_button("‹ Назад", f"adm:fix:{office_id}"),)),
     )
+
+
+def card_screen(services: BotContext, employee_id: str) -> tuple[str, InlineKeyboardMarkup] | None:
+    """One person. None when there is no such employee, so the caller can say so.
+
+    A builder rather than a handler helper: a cancelled rename has to come back here, and
+    a screen you can only reach by pressing its own button is not somewhere you can return
+    to.
+    """
+    found = _find(services, employee_id)
+    if found is None:
+        return None
+    office_id, employee = found
+
+    today = services.clock.today()
+    departed = not employee.in_tenure(today)
+    upcoming = services.schedule.upcoming_for_employee(employee.id, start=today, limit=5)
+    common = services.voice.catalog.common
+
+    handle = f"@{employee.telegram_username}" if employee.telegram_username else "не задан"
+    linked = "да" if employee.telegram_user_id is not None else "нет"
+    gender = "женский" if str(employee.gender) == "female" else "мужской"
+    days = ", ".join(format_date(day, common) for day in upcoming) or "нет"
+
+    lines = [
+        f"<b>{html.escape(employee.full_name)}</b>",
+        f"id: <code>{html.escape(employee.id)}</code>",
+        f"Ник: {html.escape(handle)} · привязан: {linked}",
+        f"Род: {gender}",
+        f"Ближайшие дни: {html.escape(days)}",
+    ]
+    if departed:
+        ended = employee.ended_on.isoformat() if employee.ended_on else "—"
+        lines.append(f"<i>Уволен с {ended}</i>")
+
+    return ("\n".join(lines), employee_card(office_id, employee.id, departed=departed))
 
 
 def roster_screen(services: BotContext, office_id: str) -> tuple[str, InlineKeyboardMarkup]:
@@ -1623,21 +1814,6 @@ def _back_button(office_id: str):  # type: ignore[no-untyped-def]
     return _button("‹ Назад", f"adm:office:{office_id}")
 
 
-async def _replace(query: CallbackQuery, text: str, markup: Any) -> None:
-    """Redraw the screen in place.
-
-    Narrow on purpose. A bare `except Exception` here turned a crash in the screen being
-    drawn into a second, stale message — which looked like the UI simply not responding.
-    """
-    await query.answer()
-    if not isinstance(query.message, Message):
-        return
-    try:
-        await query.message.edit_text(text, reply_markup=markup)
-    except TelegramBadRequest as error:
-        if "message is not modified" in str(error):
-            # Pressing a button that changes nothing is not a failure; Telegram just
-            # declines to redraw an identical message.
-            return
-        # Too old to edit, or deleted. A fresh message beats silence.
-        await query.message.answer(text, reply_markup=markup)
+async def _replace(query: CallbackQuery, text: str, markup: Any = None) -> int | None:
+    """Redraw the screen in place. See `adapters/telegram/ui.py` for the rule."""
+    return await redraw(query, text, markup)
