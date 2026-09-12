@@ -102,11 +102,26 @@ defaults to a hard delete that cascades away every assignment somebody ever had 
 silently rewrites everyone else's surplus. An end date stops them being scheduled, keeps
 the history the ledger is rebuilt from, and undoes in one button.
 
-**The office YAML is a seed, not a live source.** Seeding skips an office that already
-exists, at whole-office granularity, so after first boot the database is authoritative and
-the admin UI is the only way to change a roster. The alternative — re-applying the files
-on boot — would delete employees and cascade away their history every time someone edited
-a comment.
+**Offices and adminship live in the database; only deployment configuration is in git.**
+Offices arrived as YAML seeds once, skipped forever after first boot, which meant the
+files looked authoritative while changing nothing — and put real names and Telegram
+handles into the repository. Nothing reads them at boot now; `tabelshchik import-office`
+applies one explicitly, and that is the way back into an empty database. The alternative —
+re-applying files on boot — would delete employees and cascade away their history every
+time someone edited a comment.
+
+**Exactly one owner, enforced by a partial unique index.** Two owners is not a state
+anything here knows how to resolve, and the use case is not the only thing that writes
+rows. SQLite checks the index per statement rather than at commit, so
+`transfer_ownership` demotes before it promotes, in one transaction; the obvious order
+raises an IntegrityError out of a session scope, where it is neither catchable nor legible
+to whoever pressed the button. The owner cannot be revoked, only transferred — that is
+what keeps the table from emptying, since an empty table has nobody who can grant
+adminship back.
+
+**`ADMIN_IDS` seeds an empty admin table and nothing else.** An environment variable that
+re-granted adminship on every boot would make leaving impossible, which is the thing this
+was built for. The emptiness test doubles as the way back in.
 
 **Chat memory is a ring buffer, not a time series.** Writing a new fact is what evicts the
 oldest. A bounded number of rows means a bounded prompt, which means a bill that cannot

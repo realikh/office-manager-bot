@@ -26,7 +26,8 @@ Run **all four** before calling anything done. CI runs the same set and has caug
 test artifacts.
 
 ```bash
-uv run tabelshchik validate      # parse config, print a summary, touch nothing
+uv run tabelshchik validate      # parse app.yaml + messages.yaml, touch nothing
+uv run tabelshchik import-office FILE...   # load office YAML into the database
 uv run tabelshchik healthcheck   # read the heartbeat file's age
 uv run tabelshchik run           # the bot
 ```
@@ -69,9 +70,9 @@ nothing to register.
 | Path | What belongs there |
 |---|---|
 | `domain/` | Entities, the min-cost-flow solver, the fairness ledger, the calendar, `stable_hash`. Pure. |
-| `application/` | Use cases (`send_attendance_reminder`, `regenerate_schedule`, `manage_absences`, `manage_roster`, `chat`, `memory`, `prune_history`), the `ports.py` Protocols, `voice.py`. |
+| `application/` | Use cases (`send_attendance_reminder`, `regenerate_schedule`, `manage_absences`, `manage_roster`, `manage_offices`, `manage_admins`, `chat`, `memory`, `prune_history`), the `ports.py` Protocols, `ids.py`, `voice.py`. |
 | `adapters/` | SQLAlchemy repositories, the Telegram routers, the OpenAI client, APScheduler, XLSX, fakes. |
-| `config/` | Pydantic models for `app.yaml`, `messages.yaml`, `offices/*.yaml`. |
+| `config/` | Pydantic models for `app.yaml` and `messages.yaml`; `OfficeSeed` for the import command. |
 | `bootstrap/` | The composition root, job registration, lifespan, `mapping.py`. |
 
 ### Adding a capability
@@ -119,7 +120,7 @@ and the office it may speak about, or `None` for nothing at all:
 | Situation | Audience | Office |
 |---|---|---|
 | chat id matches a configured office | `OFFICE_CHAT` | that office |
-| private, user id in `admin_ids` | `ADMIN` | their own, else first active |
+| private, user id in the `admin` table | `ADMIN` | their own, else first active |
 | private, linked **and in tenure** | `EMPLOYEE` | that employee's office |
 | anything else | `STRANGER` | `None` |
 
@@ -138,11 +139,18 @@ Rules that follow from it, each with a test:
 - **Never add a fallback that cannot fail.** `office_id is None` must stay reachable.
 - **Tenure is checked at the gate**, not by clearing `telegram_user_id` on termination —
   the link is what lets a reminder tag someone, and `restore` should just work.
+- **A closed office answers nobody.** That used to be an accident of three separate scans
+  iterating `active_offices()`; now that an office can be closed from a button, the check
+  is written out in `audience.resolve` and in employee self-service.
 - `/start` decides via `audience.claim()`, which refuses a username match onto a record
   somebody else already holds, and reports "unknown" for a departed employee so the bot is
   not an oracle for testing handles against the roster.
 - **Screens that name other people are private-chat only** — the whole admin router, plus
-  `me:office` and `/menu`. `_replace` edits in whatever chat the button lives in.
+  `me:office` and `/menu`. `_replace` edits in whatever chat the button lives in. The one
+  exception is `routers/bind.py`, which runs in groups and lists office *names* only; its
+  callback re-checks `is_admin` on the press, because `AdminOnly` (now in
+  `adapters/telegram/middlewares.py`) answers with silence, which in a group reads as a
+  broken bot rather than a refusal.
 
 ## Traps
 
@@ -175,6 +183,9 @@ step calls `_refused_a_command(message)` before touching the text. Order alone i
 reordering away from breaking. Prompts carry a `✖️ Отмена` button, because that is what
 people reach for.
 
+The tests read the state-group names **out of the source**, so a flow added later cannot
+exempt itself by not being on a hard-coded list. Add a `StatesGroup` and it is covered.
+
 It was harmless in the other flows only because a username regex and an integer parser
 rejected the command — luck, not design.
 
@@ -186,7 +197,9 @@ because the write it follows has already landed. The visible symptom is a UI tha
 not respond: the checkbox is right the next time you open the screen and never on the tap.
 
 Build screens from **explicit arguments** instead. In `routers/admin.py` those are
-`office_screen`, `desks_screen`, `fixed_screen`, `fixed_day_screen`, `roster_screen` —
+`offices_screen`, `office_screen`, `office_settings_screen`, `chat_screen`,
+`calendar_screen`, `desks_screen`, `fixed_screen`, `fixed_day_screen`, `roster_screen`,
+`admins_screen`, `admin_card_screen`, `grant_screen` —
 each returns `(text, markup)` from its own parameters, and handlers do
 `await _replace(query, *some_screen(services, office_id))`.
 `tests/integration/test_admin_screens.py::test_no_handler_redraws_by_calling_another_handler`
@@ -227,17 +240,49 @@ The default cascades away every assignment a person ever had and silently rewrit
 everyone else's fairness numbers. `application/manage_roster.end_tenure` always passes an
 explicit date. Never call the store method directly from a handler.
 
-### Seeding does not update an existing office
+### Offices and admins are database rows, not files
 
-`seed_offices` skips any office already in the database (`replace_existing=False`), at
-**whole-office granularity**. So editing `config/offices/*.yaml` after first boot changes
-nothing — the database is authoritative and the admin UI is the way to edit a roster.
-Flipping that flag would hard-delete employees and cascade away their history.
+Nothing reads `config/offices/*.yaml` at boot; the directory is git-ignored and only
+`tabelshchik import-office` applies one, explicitly. Offices are created from `/admin`,
+and `seed_offices` survives for that command and for tests. `replace_existing=True` stays
+off the command line: it hard-deletes an office and cascades away every assignment and
+ledger entry it ever had.
+
+Adminship is the `admin` table, with **exactly one `OWNER`** enforced by a partial unique
+index. Three rules follow, each with a test:
+
+- **Demote before you promote.** SQLite checks that index per statement, not at commit, so
+  `transfer_ownership` does both in one transaction in that order. The obvious order
+  raises an IntegrityError out of a session scope.
+- **The owner cannot be revoked, only transferred** — an empty table has nobody left who
+  can grant adminship back. An admin may always remove *themselves*, which is what lets an
+  ex-owner finish leaving.
+- **`ADMIN_IDS` seeds the table only when it is empty.** A variable that re-granted
+  adminship every boot would make leaving impossible. Emptying the table by hand is the
+  way back in.
+
+`is_admin` hits the database on every update and is deliberately uncached: a promotion has
+to work on that person's next message, not at the next deploy.
+
+### Closing an office has to stop the things that speak
+
+Per-office jobs are registered at boot and outlive the office, so `send_attendance_reminder`,
+`send_tempo_reminder` and the horizon extender each check `office.active` themselves,
+**before `planning_context`** — which raises `LookupError` once the office is gone, and the
+runner turns that into a Telegram failure alert every Thursday forever. `JobRunner.add_live`
+and `drop` keep a running scheduler in step; `add` alone only appends to the list `start`
+read once.
 
 ### Telegram limits
 
 - **Callback data: 64 bytes total.** `adm:empv:<employeeId>` fits; `adm:x:<officeId>:<employeeId>`
-  can not. Derive the office from the employee instead of carrying both.
+  can not. Derive the office from the employee instead of carrying both —
+  `OfficeStore.office_of` is one indexed lookup. `adm:fixtog:` was the exception until an
+  office id could be typed by an admin, at which point it stopped fitting.
+  `test_every_callback_a_screen_emits_fits_telegram_s_limit` builds every screen with
+  maximum-length ids and checks. **Every callback prefix ends in a colon**: dispatch is
+  `startswith` in registration order, so without it `adm:emp` swallows `adm:empadd:…` —
+  `test_no_callback_prefix_shadows_another` enforces that.
 - **Message: 4096 characters.** An over-long message is simply not delivered. Use
   `voice.render_days`, which chunks.
 - **Document caption: 1024 characters.** Build one with

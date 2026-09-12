@@ -11,3 +11,7 @@ out/
 .env
 .DS_Store
 .import_linter_cache/
+
+# Office files are an import format, not configuration. Offices live in the database,
+# and these carry real names and Telegram handles.
+config/offices/

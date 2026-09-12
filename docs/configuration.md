@@ -1,7 +1,12 @@
 # Configuration
 
-Three files, one rule about which of them is in charge, and a recipe for adding a setting
+Two files in git, one line about what belongs in them, and a recipe for adding a setting
 without leaving half of it unwired.
+
+**The line: deployment configuration lives in git; the organisation lives in the
+database.** Offices, employees, weekly templates, calendar exceptions and who is an admin
+are all edited from the bot, by the people who run it. Timezones, reminder times and the
+bot's voice are deploy-time decisions and stay in the repository.
 
 ## The files
 
@@ -9,34 +14,46 @@ without leaving half of it unwired.
 |---|---|---|
 | `config/app.yaml` | Operational settings: timezone, reminder times, silent hours, schedule policy, retention, moods, AI, health | **Always live.** Read at boot; there is no copy in the database. |
 | `config/messages.yaml` | Every user-facing string, per mood | **Always live.** See [ai-voice.md](ai-voice.md). |
-| `config/offices/*.yaml` | Offices, employees, weekly template, calendar exceptions, absences | **Seed only.** See below. |
 
-Secrets are never in any of them: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `ADMIN_IDS`,
+Secrets are never in either: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `ADMIN_IDS`,
 `ADMIN_CHAT_ID` come from the environment (`.env` on the server), via
 `bootstrap/settings.py`.
 
-## Seed versus database
+## What is not here any more
 
-An office file is **bootstrap data, not a live source of truth**. `seed_offices` inserts
-an office the first time it is seen and then skips it forever
-(`replace_existing=False`).
+`config/offices/*.yaml` used to describe offices. It was a seed: `seed_offices` inserted
+an office the first time it was seen and then skipped it forever, at whole-office
+granularity — so editing a file on a running system did nothing at all, while the file sat
+in the repository looking authoritative. It also put real names, Telegram handles and the
+office group id into git.
 
-Two consequences that surprise people:
+Offices are created and edited from `/admin` now, and nothing reads those files at boot.
+They survive as an **import format**:
 
-- **Editing an office file after first boot does nothing.** Adding a person to
-  `ovest.yaml` on a running system has no effect. Use the admin UI
-  (`/admin` → office → 👥 Сотрудники), which writes to the database through
-  `application/manage_roster.py`.
-- **The skip is at whole-office granularity.** If `models.Office(id=…)` exists, the entire
-  file is skipped — employees, template, calendar, absences and all.
+```bash
+uv run tabelshchik import-office path/to/office.yaml
+```
 
-Flipping `replace_existing=True` — or adding a "reload config" button that does — would
-**hard-delete employees and cascade away their assignments and ledger history**. The
-admin "⚙️ Конфиг" screen deliberately only validates the files on disk; it applies
-nothing.
+Explicit, never automatic, and the way back into an empty database after a restore.
+There is deliberately no `--replace`: replacing an office hard-deletes it and cascades
+away every employee, assignment and ledger entry it ever had.
 
-The office files are still worth keeping accurate. They are what a rebuild from an empty
-database produces, and the only human-readable record of the starting state.
+`config/offices/` is git-ignored. If you keep local copies, they are a snapshot rather
+than a record — the database is the record, and the nightly backup is what protects it.
+
+## Adminship
+
+There is no `admins:` key. Admins live in the `admin` table, exactly one of them an
+`OWNER`, and they are managed from `/admin` → 👑 Администраторы.
+
+`ADMIN_IDS` seeds that table **only when it is empty** — the same rule the office files
+followed, for the same reason. Once anybody is an admin the environment variable does
+nothing, which is what lets an owner hand the bot over and then stop being an admin. If
+the table ever ends up empty, the next boot re-seeds from it; that is the way back in.
+
+`ADMIN_CHAT_ID` is optional and falls back to the owner's own Telegram id. Keep it set
+anyway: `scripts/deploy.sh` reads it out of `.env` directly to report a failed deploy, and
+it cannot reach the database.
 
 ## Validation
 

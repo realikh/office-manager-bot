@@ -103,8 +103,15 @@ def test_the_person_and_their_history_survive_the_removal(office) -> None:
 more than checking that `regenerate` was called.
 
 **Fixtures come from `conftest.py`.** `tests/integration/conftest.py` gives you
-`sessions` (in-memory SQLite, schema created), `real_config`, and `office_seed()` /
-`seed()` for a four-person office. `ANCHOR` is a Monday; several tests rely on that.
+`sessions` (in-memory SQLite, schema created) and `seed()` with `office_seed()` for a
+four-person office, `big_office_seed()` for twelve people against eleven Friday desks —
+the dense case, where `shortfall == 0` is worth asserting — or `fixed_office_seed()` for
+a fixed-schedule-only office the solver short-circuits on. `ANCHOR` is a Monday; several
+tests rely on that.
+
+There is no `real_config` fixture any more: offices live in the database and are no longer
+read from the repository, so the tests that needed a realistic roster build one of the
+same *shape* instead.
 
 **Strict mypy runs on tests too**, with the ceremony relaxed: untyped defs are allowed,
 `union-attr` is off (tests assert on values they just wrote). The checks that catch real

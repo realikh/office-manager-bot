@@ -92,9 +92,9 @@ config/        pydantic models over YAML
 `pathlib`, `os`, `yaml` or any framework. `application` may not import the config
 package, so every use case runs in a test with no config file on disk.
 
-Operational settings live in YAML; rosters, offices and weekly templates live in the
-database, seeded once from `config/offices/*.yaml` and edited thereafter from the bot.
-One source of truth per kind of data.
+Operational settings live in YAML; offices, rosters, weekly templates and who is an admin
+live in the database and are edited from the bot. One source of truth per kind of data —
+deployment configuration in git, the organisation in the database.
 
 ## Quick start
 
@@ -130,7 +130,7 @@ and the specific ways this repo has bitten people before.
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | Touching the solver, the ledger or retention |
 | [docs/ai-voice.md](docs/ai-voice.md) | Touching a prompt, a guard or `config/messages.yaml` |
-| [docs/configuration.md](docs/configuration.md) | Adding a setting or editing an office file |
+| [docs/configuration.md](docs/configuration.md) | Adding a setting, or importing an office file |
 | [docs/testing.md](docs/testing.md) | Adding tests — or when one you did not expect breaks |
 | [docs/deploy.md](docs/deploy.md) | Moving it to a different machine |
 
@@ -139,7 +139,8 @@ and the specific ways this repo has bitten people before.
 ```bash
 uv run python scripts/migrate_from_old_bot.py \
     --src ~/Developer/office-rotation-bot/configs/locations \
-    --out config/offices
+    --out /tmp/offices
+uv run tabelshchik import-office /tmp/offices/*.yaml
 ```
 
 Carries over rosters, team ids, tenure end dates, fixed schedules, future vacations and

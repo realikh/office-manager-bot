@@ -186,11 +186,22 @@ def test_the_result_passes_the_new_schema() -> None:
     assert seed.schedule.desks_by_weekday == {4: 11}
 
 
-def test_the_real_migration_output_is_valid() -> None:
+def test_the_converted_output_loads_as_a_directory_of_office_files(tmp_path: Path) -> None:
+    """What `tabelshchik import-office` will be handed.
+
+    This used to read `config/offices/` in the repository. Those files are gone — offices
+    live in the database now — so the converter is checked against its own output, which
+    is the thing being tested anyway.
+    """
+    import yaml
+
     from tabelshchik.config.loader import load_offices
 
-    offices = load_offices(Path("config/offices"))
-    assert {o.id for o in offices} == {"ovest", "pine-office-park"}
-    pine = next(o for o in offices if o.id == "pine-office-park")
-    assert len(pine.employees) == 19
-    assert sorted(pine.schedule.fixed_by_weekday) == [0, 1, 2, 3, 4]
+    (tmp_path / "offices").mkdir()
+    (tmp_path / "offices" / "ovest.yaml").write_text(
+        yaml.safe_dump(converted(), allow_unicode=True, sort_keys=False), encoding="utf-8"
+    )
+
+    offices = load_offices(tmp_path / "offices")
+    assert [office.id for office in offices] == ["ovest"]
+    assert len(offices[0].employees) == 3

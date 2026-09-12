@@ -56,8 +56,7 @@ container after a crash but not after a host reboot.
 
 ```bash
 git clone <your-repo> tabelshchik && cd tabelshchik
-cp .env.example .env && nano .env          # token, admin id, OpenAI key
-nano config/offices/ovest.yaml             # fill in chatId for each office
+cp .env.example .env && nano .env          # token, ADMIN_IDS, OpenAI key
 docker compose up -d
 docker compose logs -f
 ```

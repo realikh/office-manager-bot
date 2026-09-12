@@ -41,23 +41,14 @@ group for no benefit.
 
 ---
 
-## 2. Point both offices at the group
-
-Edit two files. Same id in both — they share the chat, and messages will carry an office
-header so the two stay distinguishable.
-
-```bash
-# config/offices/ovest.yaml  and  config/offices/pine-office-park.yaml
-chatId: -1001234567890
-```
-
-Then check it locally:
+## 2. Check the configuration locally
 
 ```bash
 uv run tabelshchik validate
 ```
 
-You want to see both offices listed with a chat id, and a note saying the chat is shared.
+This parses `app.yaml` and `messages.yaml` and touches nothing else. There are no offices
+to check: a new deployment has none at all, and you create them from the bot in step 5.
 
 ---
 
@@ -168,26 +159,50 @@ without it the bot would sit silent until Thursday's regeneration job.
 
 ---
 
-## 6. Smoke test, before the group sees anything
+## 6. Create your first office
+
+The database starts empty — there are no offices until you make one, and nothing is read
+from a file. All of this happens in Telegram.
+
+The first boot turns the ids in `ADMIN_IDS` into admins, the lowest of them the **owner**.
+From then on that variable does nothing: adminship is managed from the bot, which is what
+lets you hand it over later and stop being an admin yourself.
+
+1. DM the bot `/start`, then `/admin`. The slash-command menu is published automatically,
+   so typing `/` shows what is available — admins see `/admin`, nobody else does. There is
+   nothing to set in @BotFather.
+2. **Офисы → ➕ Создать офис**, and send the name. You get an id back.
+3. In the office's Telegram group, send **`/bind`** and pick the office. This is how it
+   learns the chat id — that id is shown nowhere in the Telegram interface and cannot be
+   typed from memory. Two offices may share one group; messages then carry an office
+   header so they stay distinguishable.
+4. **Офисы → your office → 👥 Сотрудники → ➕ Добавить** for each person. A Telegram handle
+   is optional — anyone can link themselves later with `/start`.
+5. **🪑 Свободные места** for each weekday, and **📌 Фикс. расписание** for anyone who is
+   always in on a given day. A schedule is generated as soon as the first person exists.
+
+To give somebody else adminship: **/admin → 👑 Администраторы → ➕ Добавить**. Handing over
+ownership is two steps on purpose — grant, then transfer — after which you can remove
+yourself.
+
+---
+
+## 6.5. Smoke test, before the group sees anything
 
 Everything here is read-only or goes only to you.
 
 ```bash
 docker compose exec tabelshchik tabelshchik validate
 docker compose exec tabelshchik tabelshchik dry-run
-docker compose exec tabelshchik tabelshchik preview --office ovest
+docker compose exec tabelshchik tabelshchik preview --office <your-office-id>
 ```
 
 Then in Telegram:
 
-- DM the bot `/start` → it should greet you by name from the roster. The slash-command
-  menu is published automatically at startup, so typing `/` shows what is available —
-  admins see `/admin` there, nobody else does. There is nothing to set in @BotFather.
 - `/me` → your upcoming office days
-- `/admin` → the admin menu
-- **/admin → Офисы → O'Vest → ✉️ Тестовое напоминание** — renders the real reminder and
-  sends it **to you only**. This is the one to look at closely: right people, right date,
-  everyone tagged.
+- **/admin → Офисы → your office → ✉️ Тестовое напоминание** — renders the real reminder
+  and sends it **to you only**. This is the one to look at closely: right people, right
+  date, everyone tagged.
 - @-mention the bot in the group → it should answer
 
 ---
