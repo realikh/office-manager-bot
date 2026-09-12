@@ -37,7 +37,7 @@ from tabelshchik.adapters.db.repositories import (
     SqlScheduleStore,
     SqlUsageStore,
 )
-from tabelshchik.adapters.db.seed import seed_admins, seed_offices
+from tabelshchik.adapters.db.seed import seed_admins
 from tabelshchik.adapters.openai.client import OpenAiChatModel
 from tabelshchik.application.policy import (
     ChatPolicy,
@@ -234,13 +234,13 @@ def build_services(
     upgrade_schema(engine)
     sessions = create_session_factory(engine)
 
-    # Both are bootstraps, not live sources: an office that already exists is left
-    # exactly as the admins have edited it, and once anybody is an admin in the database
-    # ADMIN_IDS does nothing — which is what lets an owner hand the bot over and leave.
-    now = SystemClock(config.app.timezone).now()
+    # A bootstrap, not a live source. Once anybody is an admin in the database ADMIN_IDS
+    # does nothing, which is what lets an owner hand the bot over and then leave.
+    #
+    # Offices are not seeded at all any more: they are created from the bot, and reading
+    # files here would mean deciding on every boot whether the files or the database win.
     with session_scope(sessions) as session:
-        seed_offices(session, config.offices, now=now)
-        seeded = seed_admins(session, secrets.admin_ids, now=now)
+        seeded = seed_admins(session, secrets.admin_ids, now=SystemClock(config.app.timezone).now())
     if seeded:
         # Worth saying out loud: "the lowest id becomes the owner" is an arbitrary rule,
         # and it decides who can hand the bot to somebody else.

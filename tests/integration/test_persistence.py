@@ -21,7 +21,7 @@ from tabelshchik.domain.entities import (
 )
 from tabelshchik.domain.ledger import DayRecord, rebuild
 
-from .conftest import ANCHOR, NOW, office_seed, seed
+from .conftest import ANCHOR, NOW, big_office_seed, fixed_office_seed, office_seed, seed
 
 # ------------------------------------------------------------------------- seeding
 
@@ -433,12 +433,17 @@ def test_admin_actions_are_audited(sessions) -> None:
 # ------------------------------------------------------- the real migrated config
 
 
-def test_the_real_offices_seed_and_plan(sessions, real_config) -> None:
-    """End to end on the actual migrated rosters."""
+def test_a_dense_roster_seeds_and_plans_without_a_shortfall(sessions) -> None:
+    """End to end on a roster the size of a real one.
+
+    This used to run against the shipped office files. Those are gone — offices live in
+    the database — so the *shape* is reproduced instead: twelve people against eleven
+    Friday desks, which is what makes `shortfall == 0` worth asserting.
+    """
     from tabelshchik.domain.instance import build_instance
     from tabelshchik.domain.solver import solve
 
-    seed(sessions, *real_config.offices)
+    seed(sessions, big_office_seed(), fixed_office_seed())
     offices = SqlOfficeStore(sessions)
 
     context = offices.planning_context("ovest", start=ANCHOR, end=ANCHOR + timedelta(days=41))

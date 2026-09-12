@@ -6,7 +6,14 @@ from pathlib import Path
 import pytest
 import yaml
 
-from tabelshchik.config.loader import ConfigError, load, load_offices, parse_mapping
+from tabelshchik.config.loader import (
+    ConfigError,
+    LoadedConfig,
+    load,
+    load_offices,
+    parse_file,
+    parse_mapping,
+)
 from tabelshchik.config.models import AppConfig, OfficeSeed
 
 MINIMAL_APP = {"reminders": {"attendance": {"time": "15:30"}}}
@@ -37,15 +44,38 @@ def setup(tmp_path: Path, *offices: dict, app: dict | None = None) -> Path:
     return tmp_path
 
 
+def imported(tmp_path: Path, *offices: dict) -> LoadedConfig:
+    """What `tabelshchik import-office` sees.
+
+    Offices are no longer part of `load`: they live in the database. The cross-file rules
+    still exist, and still run — in `load_offices`, wherever that is called from.
+    """
+    setup(tmp_path, *offices)
+    return LoadedConfig(app=load(tmp_path).app, offices=load_offices(tmp_path / "offices"))
+
+
 # ------------------------------------------------------------------------ happy paths
 
 
-def test_loads_app_and_offices(tmp_path: Path) -> None:
+def test_loading_reads_the_app_settings_and_no_offices(tmp_path: Path) -> None:
+    """Offices live in the database. Reading them here would mean deciding on every boot
+    whether the files or the database win, and the answer has to be the database."""
     config = load(setup(tmp_path))
     assert config.app.timezone == "Asia/Almaty"
+    assert config.offices == ()
+
+
+def test_offices_are_still_parsable_for_an_import(tmp_path: Path) -> None:
+    config = imported(tmp_path)
     assert [o.id for o in config.offices] == ["ovest"]
     assert config.office("ovest") is not None
     assert config.office("nope") is None
+
+
+def test_a_deployment_without_any_office_files_still_loads(tmp_path: Path) -> None:
+    """The shipped configuration has no `offices/` directory at all any more."""
+    write(tmp_path, "app.yaml", MINIMAL_APP)
+    assert load(tmp_path).offices == ()
 
 
 def test_defaults_fill_in_everything_not_specified(tmp_path: Path) -> None:
@@ -79,25 +109,22 @@ def test_missing_app_file_is_reported_clearly(tmp_path: Path) -> None:
         load(tmp_path)
 
 
-def test_missing_offices_directory_is_reported(tmp_path: Path) -> None:
-    write(tmp_path, "app.yaml", MINIMAL_APP)
+def test_importing_a_missing_offices_directory_is_reported(tmp_path: Path) -> None:
     with pytest.raises(ConfigError, match="offices directory not found"):
-        load(tmp_path)
+        load_offices(tmp_path / "offices")
 
 
-def test_an_empty_offices_directory_is_reported(tmp_path: Path) -> None:
-    write(tmp_path, "app.yaml", MINIMAL_APP)
+def test_importing_an_empty_offices_directory_is_reported(tmp_path: Path) -> None:
     (tmp_path / "offices").mkdir()
     with pytest.raises(ConfigError, match="no office configuration"):
-        load(tmp_path)
+        load_offices(tmp_path / "offices")
 
 
 def test_broken_yaml_is_reported_as_yaml(tmp_path: Path) -> None:
-    write(tmp_path, "app.yaml", MINIMAL_APP)
     (tmp_path / "offices").mkdir()
     (tmp_path / "offices" / "bad.yaml").write_text("id: [unclosed\n", encoding="utf-8")
     with pytest.raises(ConfigError, match="not valid YAML"):
-        load(tmp_path)
+        load_offices(tmp_path / "offices")
 
 
 def test_a_freeze_window_must_leave_something_to_plan(tmp_path: Path) -> None:
@@ -118,7 +145,7 @@ def test_every_mood_weighted_zero_is_rejected(tmp_path: Path) -> None:
 def test_an_employee_may_only_belong_to_one_office(tmp_path: Path) -> None:
     second = office(id="pine", name="Pine", chatId=-100999)
     with pytest.raises(ConfigError, match="duplicate employee id"):
-        load(setup(tmp_path, office(), second))
+        imported(tmp_path, office(), second)
 
 
 def test_telegram_usernames_must_be_unique_across_offices(tmp_path: Path) -> None:
@@ -129,7 +156,7 @@ def test_telegram_usernames_must_be_unique_across_offices(tmp_path: Path) -> Non
         employees=[{"id": "borya", "name": "Боря", "telegramUsername": "ANYA1"}],
     )
     with pytest.raises(ConfigError, match="duplicate telegram username"):
-        load(setup(tmp_path, office(), second))
+        imported(tmp_path, office(), second)
 
 
 def test_two_offices_may_share_a_chat(tmp_path: Path) -> None:
@@ -137,16 +164,14 @@ def test_two_offices_may_share_a_chat(tmp_path: Path) -> None:
     into a shared chat carry an office header so the two stay distinguishable."""
     second = office(id="pine", name="Pine", employees=[{"id": "borya", "name": "Боря"}])
 
-    config = load(setup(tmp_path, office(), second))
-
-    assert config.shared_chat_ids == frozenset({-100123})
+    assert imported(tmp_path, office(), second).shared_chat_ids == frozenset({-100123})
 
 
 def test_offices_with_their_own_chats_are_not_reported_as_shared(tmp_path: Path) -> None:
     second = office(
         id="pine", name="Pine", chatId=-100999, employees=[{"id": "borya", "name": "Боря"}]
     )
-    assert load(setup(tmp_path, office(), second)).shared_chat_ids == frozenset()
+    assert imported(tmp_path, office(), second).shared_chat_ids == frozenset()
 
 
 def test_an_office_without_a_chat_is_not_shared_with_another(tmp_path: Path) -> None:
@@ -155,7 +180,7 @@ def test_an_office_without_a_chat_is_not_shared_with_another(tmp_path: Path) -> 
     second = office(
         id="pine", name="Pine", chatId=None, employees=[{"id": "borya", "name": "Боря"}]
     )
-    assert load(setup(tmp_path, first, second)).shared_chat_ids == frozenset()
+    assert imported(tmp_path, first, second).shared_chat_ids == frozenset()
 
 
 def test_offices_load_in_a_stable_order(tmp_path: Path) -> None:
@@ -258,7 +283,14 @@ def test_without_configuration_nothing_is_silent() -> None:
 # --------------------------------------------------------------- the shipped config
 
 
-def test_the_repository_configuration_is_valid() -> None:
-    """The real config/ directory must always load — it ships with the bot."""
+def test_the_shipped_configuration_is_valid() -> None:
+    """The real config/ directory must always load — it ships with the bot.
+
+    Both files. `messages.yaml` used to be checked only by `build_services`, so a broken
+    one passed `validate` — including the `validate` step CI runs — and failed at boot.
+    """
+    from tabelshchik.config.messages import MessagesConfig
+
     config = load(Path("config"))
-    assert {o.id for o in config.offices} == {"ovest", "pine-office-park"}
+    assert config.app.timezone == "Asia/Almaty"
+    assert parse_file(Path("config/messages.yaml"), MessagesConfig).common.weekdays

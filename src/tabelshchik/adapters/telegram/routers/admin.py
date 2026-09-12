@@ -49,6 +49,7 @@ from tabelshchik.application.manage_roster import RosterError
 from tabelshchik.application.regenerate_schedule import regenerate
 from tabelshchik.application.send_attendance_reminder import send_attendance_reminder
 from tabelshchik.application.voice import format_date, render_days
+from tabelshchik.config.loader import parse_file
 from tabelshchik.domain.entities import SCALE, Employee
 
 router = Router(name="admin")
@@ -758,11 +759,17 @@ async def status(query: CallbackQuery, services: BotContext) -> None:
 
 @router.callback_query(F.data == "adm:config")
 async def check_config(query: CallbackQuery, services: BotContext) -> None:
-    """Validates the files on disk without applying them."""
+    """Validates the files on disk without applying them.
+
+    The office count comes from the database, which is where offices live. It used to
+    come from the files, and would now read zero forever.
+    """
     from tabelshchik.config.loader import ConfigError, load
+    from tabelshchik.config.messages import MessagesConfig
 
     try:
-        loaded = load(services.config_dir)
+        load(services.config_dir)
+        parse_file(services.config_dir / "messages.yaml", MessagesConfig)
     except ConfigError as error:
         await _replace(
             query,
@@ -771,9 +778,11 @@ async def check_config(query: CallbackQuery, services: BotContext) -> None:
         )
         return
 
+    offices = services.offices.all_offices()
+    active = sum(1 for office in offices if office.active)
     await _replace(
         query,
-        f"✅ Конфигурация корректна. Офисов: {len(loaded.offices)}.",
+        f"✅ Конфигурация корректна.\nОфисов в базе: {len(offices)} (активных {active})",
         keyboard((_button("‹ Назад", "adm:menu"),)),
     )
 

@@ -22,7 +22,7 @@ from tabelshchik.application.send_attendance_reminder import send_attendance_rem
 from tabelshchik.bootstrap.container import Services, build_services
 from tabelshchik.bootstrap.logging import configure_logging
 from tabelshchik.bootstrap.settings import config_dir, database_path, load_secrets
-from tabelshchik.config.loader import ConfigError, load, parse_file
+from tabelshchik.config.loader import ConfigError, load, load_offices, parse_file
 from tabelshchik.config.models import AppConfig
 
 
@@ -88,6 +88,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dry.add_argument("--office", default=None)
 
+    imp = commands.add_parser(
+        "import-office",
+        help="load office YAML into the database (offices already there are skipped)",
+        parents=[inherited],
+    )
+    imp.add_argument("paths", type=Path, nargs="+")
+
     return parser
 
 
@@ -98,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
     handlers = {
         "run": _run,
         "validate": _validate,
+        "import-office": _import_office,
         "healthcheck": _healthcheck,
         "regenerate": _regenerate,
         "preview": _preview,
@@ -170,29 +178,81 @@ def _healthcheck(args: argparse.Namespace) -> int:
 
 
 def _validate(args: argparse.Namespace) -> int:
+    """Parse everything the bot reads at boot, and touch nothing.
+
+    Both files, not just `app.yaml`. `messages.yaml` used to be checked only by
+    `build_services`, so a broken one passed `validate` — including the `validate` step
+    CI runs — and failed at startup instead.
+
+    Offices are not part of this: they live in the database. A leftover `offices/`
+    directory is still checked when it exists, as a pre-flight for `import-office`.
+    """
+    from tabelshchik.config.messages import MessagesConfig
+
     directory = args.config or config_dir()
     try:
         loaded = load(directory)
+        parse_file(directory / "messages.yaml", MessagesConfig)
     except ConfigError as error:
         print(f"✖ {error}", file=sys.stderr)
         return 1
 
     print(f"✓ configuration in {directory} is valid")
-    for office in loaded.offices:
-        chat = office.chat_id if office.chat_id is not None else "— not set"
-        desks = sum(office.schedule.vacant_desks.values())
-        fixed = sum(len(ids) for ids in office.schedule.fixed.values())
-        print(
-            f"  {office.id}: {len(office.employees)} employees, "
-            f"{desks} vacant desks/week, {fixed} fixed slots, chat {chat}"
-        )
-        if office.chat_id is None:
-            print("    warning: no chatId, so this office cannot be messaged")
+    print(f"  timezone {loaded.app.timezone}, reminder at {loaded.app.reminders.attendance.time}")
 
-    for chat in sorted(loaded.shared_chat_ids):
-        sharing = [o.id for o in loaded.offices if o.chat_id == chat]
-        print(f"  note: chat {chat} is shared by {', '.join(sharing)}")
-        print("    messages will be prefixed with the office name")
+    offices_dir = directory / "offices"
+    if offices_dir.is_dir():
+        try:
+            offices = load_offices(offices_dir)
+        except ConfigError as error:
+            print(f"✖ {error}", file=sys.stderr)
+            return 1
+        print(f"  {len(offices)} office file(s) ready to import: {offices_dir}")
+        print("    offices live in the database; these apply only via `import-office`")
+    return 0
+
+
+def _import_office(args: argparse.Namespace) -> int:
+    """Load office YAML into the database. The way back in after a restore.
+
+    Offices are created from the bot now, so this is not part of booting. It exists so a
+    database rebuilt from nothing can be repopulated, and so the one-off converter in
+    `scripts/` still has somewhere to put its output.
+
+    Deliberately no `--replace`: replacing an office hard-deletes it and cascades away
+    every assignment and ledger entry it ever had.
+    """
+    from tabelshchik.adapters.clock import SystemClock
+    from tabelshchik.adapters.db.engine import (
+        create_db_engine,
+        create_session_factory,
+        session_scope,
+        upgrade_schema,
+    )
+    from tabelshchik.adapters.db.seed import seed_offices
+    from tabelshchik.config.loader import parse_file as _parse
+    from tabelshchik.config.models import OfficeSeed
+
+    try:
+        app = _parse((args.config or config_dir()) / "app.yaml", AppConfig)
+        seeds = tuple(_parse(path, OfficeSeed) for path in args.paths)
+    except ConfigError as error:
+        print(f"✖ {error}", file=sys.stderr)
+        return 1
+
+    engine = create_db_engine(args.db or database_path())
+    upgrade_schema(engine)
+    sessions = create_session_factory(engine)
+    try:
+        with session_scope(sessions) as session:
+            report = seed_offices(session, seeds, now=SystemClock(app.timezone).now())
+    finally:
+        engine.dispose()
+
+    for office_id in report.created:
+        print(f"✓ created {office_id}")
+    for office_id in report.skipped:
+        print(f"— skipped {office_id}: already in the database, which is authoritative")
     return 0
 
 

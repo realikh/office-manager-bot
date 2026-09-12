@@ -100,10 +100,23 @@ def test_defaults_apply_when_nothing_is_passed() -> None:
         ("simulate",),
         ("regenerate", "--office", "ovest"),
         ("preview", "--office", "ovest"),
+        ("import-office", "offices/ovest.yaml"),
     ],
 )
 def test_every_command_parses(argv: tuple[str, ...]) -> None:
     assert parse(*argv).command == argv[0]
+
+
+def test_importing_an_office_takes_several_files() -> None:
+    args = parse("import-office", "a.yaml", "b.yaml")
+    assert [str(path) for path in args.paths] == ["a.yaml", "b.yaml"]
+
+
+def test_importing_offers_no_way_to_replace_one() -> None:
+    """`replace_existing=True` hard-deletes the office and cascades away every assignment
+    and ledger entry it ever had. It stays available to tests and off the command line."""
+    with pytest.raises(SystemExit):
+        parse("import-office", "a.yaml", "--replace")
 
 
 def test_a_command_is_required() -> None:

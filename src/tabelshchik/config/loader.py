@@ -26,7 +26,9 @@ class ConfigError(Exception):
 @dataclass(frozen=True, slots=True)
 class LoadedConfig:
     app: AppConfig
-    offices: tuple[OfficeSeed, ...]
+    #: Empty unless somebody explicitly parsed a directory of office files. Offices live
+    #: in the database; `load` does not read them and the bot does not boot from them.
+    offices: tuple[OfficeSeed, ...] = ()
 
     def office(self, office_id: str) -> OfficeSeed | None:
         return next((office for office in self.offices if office.id == office_id), None)
@@ -42,18 +44,24 @@ class LoadedConfig:
 
 
 def load(config_dir: Path) -> LoadedConfig:
-    """Load and validate the whole configuration directory."""
+    """Load and validate the operational configuration.
+
+    Offices are deliberately *not* loaded here. They live in the database, created and
+    edited from the bot, and a deployment may have no `offices/` directory at all — see
+    `load_offices`, which only `tabelshchik import-office` calls.
+    """
     if not config_dir.is_dir():
         raise ConfigError(f"configuration directory not found: {config_dir}")
 
-    app = parse_file(config_dir / APP_FILE, AppConfig)
-    offices = load_offices(config_dir / OFFICES_DIR)
-    _check_across_offices(offices)
-
-    return LoadedConfig(app=app, offices=offices)
+    return LoadedConfig(app=parse_file(config_dir / APP_FILE, AppConfig))
 
 
 def load_offices(offices_dir: Path) -> tuple[OfficeSeed, ...]:
+    """Parse a directory of office files, for importing into a database.
+
+    The cross-file checks run here rather than at the call site, so the rules cannot be
+    skipped by whoever adds the next entry point.
+    """
     if not offices_dir.is_dir():
         raise ConfigError(f"offices directory not found: {offices_dir}")
 
@@ -61,7 +69,9 @@ def load_offices(offices_dir: Path) -> tuple[OfficeSeed, ...]:
     if not paths:
         raise ConfigError(f"no office configuration files in {offices_dir}")
 
-    return tuple(parse_file(path, OfficeSeed) for path in paths)
+    offices = tuple(parse_file(path, OfficeSeed) for path in paths)
+    _check_across_offices(offices)
+    return offices
 
 
 def parse_file[ModelT: BaseModel](path: Path, model: type[ModelT]) -> ModelT:
