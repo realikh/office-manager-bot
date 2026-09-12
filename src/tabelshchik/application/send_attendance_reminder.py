@@ -30,6 +30,9 @@ from tabelshchik.domain.mood import Mood
 
 
 class ReminderSkip(StrEnum):
+    #: The office is closed, or gone. Its jobs were registered when the bot booted and
+    #: outlive both, so this is what stops a closed office still announcing a roster.
+    INACTIVE = "inactive"
     NO_WORKING_DAY = "no-working-day"
     NOT_SCHEDULED = "not-scheduled"
     ALREADY_ANNOUNCED = "already-announced"
@@ -65,6 +68,13 @@ async def send_attendance_reminder(
     dry_run: bool = False,
     pin: bool = False,
 ) -> ReminderOutcome:
+    office = offices.get_office(office_id)
+    if office is None or not office.active:
+        # Before `planning_context`, which raises LookupError for an office that is gone.
+        # Per-office jobs are fixed at boot, so closing or deleting an office leaves its
+        # reminder scheduled; without this it keeps announcing, or the job fails nightly.
+        return ReminderOutcome(office_id, None, skipped=ReminderSkip.INACTIVE)
+
     today = clock.today()
     # Far enough ahead to step over a holiday chain.
     context = offices.planning_context(office_id, start=today, end=today + timedelta(days=21))

@@ -98,6 +98,12 @@ async def send_tempo_reminder(
     chat_id: int | None = None,
     dry_run: bool = False,
 ) -> TempoOutcome:
+    office = offices.get_office(office_id)
+    if office is None or not office.active:
+        # Per-office jobs are fixed at boot and outlive the office. See the same guard in
+        # `send_attendance_reminder`.
+        return TempoOutcome(office_id, skipped="inactive")
+
     today = clock.today()
     context = offices.planning_context(office_id, start=today, end=today + timedelta(days=40))
 

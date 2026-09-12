@@ -125,6 +125,13 @@ def _extend_handler(services: Services, office_id: str):  # type: ignore[no-unty
     """Rolls the horizon forward and publishes the workbook if anything moved."""
 
     async def handler(_: JobContext) -> None:
+        office = services.offices.get_office(office_id)
+        if office is None or not office.active:
+            # `regenerate` reaches `planning_context`, which raises LookupError once the
+            # office is gone — and the runner turns that into a Telegram failure alert
+            # every Thursday, forever.
+            return
+
         result = regenerate(
             office_id=office_id,
             offices=services.offices,
