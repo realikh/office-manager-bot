@@ -22,6 +22,7 @@ from aiogram.types import CallbackQuery, Message
 
 from tabelshchik.adapters.telegram.keyboards import button, keyboard
 from tabelshchik.adapters.telegram.middlewares import AdminOnly
+from tabelshchik.adapters.telegram.ui import redraw
 from tabelshchik.application import manage_offices
 from tabelshchik.application.context import BotContext
 from tabelshchik.application.manage_offices import OfficeError
@@ -91,9 +92,8 @@ async def choose(query: CallbackQuery, services: BotContext) -> None:
         await query.answer(str(error), show_alert=True)
         return
 
-    await query.answer()
-    await query.message.edit_text(
-        f"Готово — напоминания офиса «{html.escape(change.name)}» будут приходить сюда."
+    await redraw(
+        query, f"Готово — напоминания офиса «{html.escape(change.name)}» будут приходить сюда."
     )
 
 

@@ -8,15 +8,17 @@ from __future__ import annotations
 
 import html
 from datetime import date, datetime, timedelta
+from typing import Any
 
 from aiogram import F, Router
 from aiogram.enums import ChatType
-from aiogram.filters import Command
+from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
-from tabelshchik.adapters.telegram.keyboards import absence_list, employee_menu
+from tabelshchik.adapters.telegram.keyboards import absence_list, button, employee_menu, keyboard
+from tabelshchik.adapters.telegram.ui import redraw, rehome
 from tabelshchik.application.audience import linked
 from tabelshchik.application.context import BotContext
 from tabelshchik.application.manage_absences import (
@@ -31,9 +33,19 @@ router = Router(name="employee")
 
 NOT_LINKED = "Сначала напишите /start, чтобы я вас узнал."
 DATE_HELP = (
-    "Пришлите даты отпуска в формате <code>2026-10-01 2026-10-09</code>.\n"
-    "Для одного дня достаточно одной даты. Отмена — /cancel."
+    "Отправьте даты отпуска в формате <code>2026-10-01 2026-10-09</code>.\n"
+    "Для одного дня достаточно одной даты."
 )
+
+
+#: Attached to every prompt and every rejected answer. Typing /cancel works too, but a
+#: button is what people reach for — the admin router learned that the hard way.
+def _cancel_keyboard() -> InlineKeyboardMarkup:
+    return keyboard((button("✖️ Отмена", "me:menu"),))
+
+
+def _menu_screen() -> tuple[str, InlineKeyboardMarkup]:
+    return ("Меню:", employee_menu())
 
 
 class AddAbsence(StatesGroup):
@@ -89,30 +101,31 @@ async def my_days(message: Message, services: BotContext) -> None:
 
 @router.message(Command("vacation"))
 async def my_absences(message: Message, services: BotContext) -> None:
-    await _show_absences(message, services, message.from_user.id if message.from_user else None)
+    text, markup = absences_screen(services, message.from_user.id if message.from_user else None)
+    await message.answer(text, reply_markup=markup)
 
 
 @router.callback_query(F.data == "me:absences")
 async def absences_callback(query: CallbackQuery, services: BotContext) -> None:
-    await query.answer()
-    if isinstance(query.message, Message):
-        await _show_absences(query.message, services, query.from_user.id)
+    await redraw(query, *absences_screen(services, query.from_user.id))
 
 
 @router.callback_query(F.data == "me:menu")
-async def back_to_menu(query: CallbackQuery) -> None:
-    await query.answer()
-    if isinstance(query.message, Message):
-        await query.message.answer("Меню:", reply_markup=employee_menu())
+async def back_to_menu(query: CallbackQuery, state: FSMContext) -> None:
+    # Doubles as the ✖️ Отмена of the absence flow, so it clears the state too.
+    await state.clear()
+    await redraw(query, *_menu_screen())
 
 
 @router.callback_query(F.data == "me:days")
 async def days_callback(query: CallbackQuery, services: BotContext) -> None:
-    await query.answer()
-    if isinstance(query.message, Message):
-        # The callback's from_user is the person who pressed the button; the message's
-        # is the bot, which is why the rendering takes an explicit user id.
-        await query.message.answer(render_my_days(services, query.from_user.id))
+    # The callback's from_user is the person who pressed the button; the message's is the
+    # bot, which is why the rendering takes an explicit user id.
+    await redraw(
+        query,
+        render_my_days(services, query.from_user.id),
+        keyboard((button("‹ Назад", "me:menu"),)),
+    )
 
 
 @router.callback_query(F.data == "me:office", F.message.chat.type == ChatType.PRIVATE)
@@ -145,20 +158,28 @@ async def office_week(query: CallbackQuery, services: BotContext) -> None:
     )
     for chunk in chunks or ["На ближайшую неделю никого не запланировано."]:
         await query.message.answer(chunk)
+    # The week is content, so it lands below the menu; bring the menu down after it
+    # rather than leaving it stranded above.
+    await rehome(query.message, query.message.message_id, *_menu_screen())
 
 
 @router.callback_query(F.data == "me:absadd")
 async def start_adding(query: CallbackQuery, state: FSMContext) -> None:
-    await query.answer()
+    # The prompt replaces the list rather than stacking under it, so there is never a
+    # second live keyboard to press by mistake.
+    screen = await redraw(query, DATE_HELP, _cancel_keyboard())
     await state.set_state(AddAbsence.waiting_for_dates)
-    if isinstance(query.message, Message):
-        await query.message.answer(DATE_HELP)
+    await state.set_data({"screen": screen})
 
 
-@router.message(Command("cancel"))
+@router.message(Command("cancel"), StateFilter(AddAbsence.waiting_for_dates))
 async def cancel(message: Message, state: FSMContext) -> None:
-    await state.clear()
-    await message.answer("Отменено.", reply_markup=employee_menu())
+    """State-filtered on purpose.
+
+    An unfiltered /cancel in one router answers for flows belonging to another — which is
+    how cancelling a half-finished admin wizard once replied with the employee menu.
+    """
+    await _finish(message, state, *_menu_screen())
 
 
 @router.message(AddAbsence.waiting_for_dates)
@@ -166,25 +187,23 @@ async def receive_dates(message: Message, state: FSMContext, services: BotContex
     # A command is never a date. It only fails to become one here because `_parse_dates`
     # rejects it, which is luck; the admin flows lost a name to exactly this.
     if (message.text or "").lstrip().startswith("/"):
-        await message.answer(DATE_HELP)
+        await _step(message, state, DATE_HELP, _cancel_keyboard())
         return
 
     employee = _employee(services, message.from_user.id if message.from_user else None)
     if employee is None:
-        await state.clear()
-        await message.answer(NOT_LINKED)
+        await _finish(message, state, NOT_LINKED)
         return
 
     try:
         start, end = _parse_dates(message.text or "")
     except ValueError:
-        await message.answer(DATE_HELP)
+        await _step(message, state, DATE_HELP, _cancel_keyboard())
         return
 
     office_id = _office_of(services, employee.id)
     if office_id is None:
-        await state.clear()
-        await message.answer(NOT_LINKED)
+        await _finish(message, state, NOT_LINKED)
         return
 
     try:
@@ -203,10 +222,10 @@ async def receive_dates(message: Message, state: FSMContext, services: BotContex
             audit=services.audit,
         )
     except AbsenceError as error:
-        await message.answer(str(error))
+        # Stays in the state: a rejected range is worth retyping, not restarting.
+        await _step(message, state, str(error), _cancel_keyboard())
         return
 
-    await state.clear()
     common = services.voice.catalog.common
     reply = f"Отпуск записан: {format_date(start, common)} — {format_date(end, common)}."
 
@@ -215,7 +234,8 @@ async def receive_dates(message: Message, state: FSMContext, services: BotContex
     if result.needs_correction:
         reply += "\nНа уже объявленные дни отправлю в чат уточнение."
 
-    await message.answer(reply, reply_markup=employee_menu())
+    text, markup = absences_screen(services, message.from_user.id if message.from_user else None)
+    await _finish(message, state, f"{reply}\n\n{text}", markup)
     await _notify_corrections(services, office_id, result.announced_days_affected, employee)
 
 
@@ -230,7 +250,7 @@ async def delete_absence(query: CallbackQuery, services: BotContext) -> None:
     existing = services.absences.get(absence_id)
     # Only your own: a callback id is guessable, so ownership is checked, not assumed.
     if existing is None or existing[1] != employee.id:
-        await query.message.answer("Не найдено.")
+        await query.answer("Не найдено.", show_alert=True)
         return
 
     office_id = _office_of(services, employee.id)
@@ -249,15 +269,23 @@ async def delete_absence(query: CallbackQuery, services: BotContext) -> None:
         policy=services.schedule_policy,
         audit=services.audit,
     )
-    await query.message.answer("Отпуск удалён.")
-    await _show_absences(query.message, services, query.from_user.id)
+    text, markup = absences_screen(services, query.from_user.id)
+    await redraw(query, f"Отпуск удалён.\n\n{text}", markup)
 
 
-async def _show_absences(message: Message, services: BotContext, user_id: int | None) -> None:
+def absences_screen(services: BotContext, user_id: int | None) -> tuple[str, Any]:
+    """Somebody's upcoming absences.
+
+    A builder rather than a sender, so deleting one redraws the list in place. It used to
+    send two fresh messages per deletion, each leaving a live keyboard behind pointing at
+    ids that no longer existed.
+
+    The count is in the text on purpose: Telegram refuses to redraw a message whose text
+    and markup are both unchanged, and deleting the last one changes only the keyboard.
+    """
     employee = _employee(services, user_id)
     if employee is None:
-        await message.answer(NOT_LINKED)
-        return
+        return (NOT_LINKED, None)
 
     entries = services.absences.for_employee(employee.id, upcoming_from=services.clock.today())
     common = services.voice.catalog.common
@@ -265,8 +293,21 @@ async def _show_absences(message: Message, services: BotContext, user_id: int | 
         (absence_id, f"{format_date(start, common)} — {format_date(end, common)}")
         for absence_id, start, end, _kind in entries
     ]
-    text = "Ваши отпуска:" if labels else "Отпусков не запланировано."
-    await message.answer(text, reply_markup=absence_list(labels))
+    text = f"Ваши отпуска — {len(labels)}:" if labels else "Отпусков не запланировано."
+    return (text, absence_list(labels))
+
+
+async def _step(message: Message, state: FSMContext, text: str, markup: Any = None) -> None:
+    """A re-prompt, moved down below what the user just typed."""
+    data = await state.get_data()
+    await state.update_data(screen=await rehome(message, data.get("screen"), text, markup))
+
+
+async def _finish(message: Message, state: FSMContext, text: str, markup: Any = None) -> None:
+    """The last screen of the flow. Moves it down, then forgets the flow."""
+    data = await state.get_data()
+    await rehome(message, data.get("screen"), text, markup)
+    await state.clear()
 
 
 async def _notify_corrections(
