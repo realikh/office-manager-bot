@@ -267,6 +267,24 @@ def test_no_callback_handler_hands_out_a_second_keyboard() -> None:
     assert not offenders, f"callback handlers sending a second keyboard: {offenders}"
 
 
+def test_no_flow_step_hands_out_a_second_keyboard_either() -> None:
+    """The same rule on the typing side of a flow.
+
+    A state handler that sends its own keyboard leaves the prompt above it live, so the
+    flow ends up with two. `_step` and `_finish` rehome instead — they take their markup
+    positionally, so a `reply_markup=` keyword here is one that got away. A command entry
+    point is exempt: it is the root of a conversation and has nothing to edit.
+    """
+    groups = "|".join(sorted(STATE_GROUPS))
+    bodies = re.split(r"\n(?=@router\.)", ADMIN_SOURCE)
+    offenders = [
+        body.split("async def ")[1].split("(")[0]
+        for body in bodies
+        if re.search(rf"@router\.message\((?:{groups})\.", body) and "reply_markup=" in body
+    ]
+    assert not offenders, f"flow steps sending a second keyboard: {offenders}"
+
+
 def test_every_flow_records_where_to_return() -> None:
     """✖️ Отмена goes back where the flow started, which only works if it was told."""
     starts = re.findall(r"await _ask\(\n(?:.*?\n)*?    \)", ADMIN_SOURCE)

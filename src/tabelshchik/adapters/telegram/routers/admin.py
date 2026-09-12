@@ -1401,10 +1401,9 @@ async def apply_typed_id(
         return
     raw = (message.text or "").strip()
     if not raw.lstrip("-").isdecimal():
-        await message.answer("Нужно число. Попробуйте ещё раз.", reply_markup=cancel_keyboard())
+        await _step(message, state, "Нужно число. Попробуйте ещё раз.", cancel_keyboard())
         return
 
-    await state.clear()
     actor_id = message.from_user.id if message.from_user else 0
     try:
         manage_admins.grant(
@@ -1415,12 +1414,13 @@ async def apply_typed_id(
             audit=services.audit,
         )
     except AdminError as error:
-        await message.answer(str(error), reply_markup=main_menu(owner=_is_owner(services, message)))
+        # Stays in the state: a mistyped id is worth retyping, not restarting.
+        await _step(message, state, str(error), cancel_keyboard())
         return
 
     await publish_for(bot, int(raw), admin=True)
     text, markup = admins_screen(services, viewer_id=actor_id)
-    await message.answer(f"Готово. {GRANT_HINT}\n\n{text}", reply_markup=markup)
+    await _finish(message, state, f"Готово. {GRANT_HINT}\n\n{text}", markup)
 
 
 @router.callback_query(F.data.startswith("adm:admdel:"))
