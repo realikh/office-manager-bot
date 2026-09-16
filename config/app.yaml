@@ -1,8 +1,10 @@
 # Табельщик — operational settings.
 #
-# This file holds settings an operator changes. Offices, rosters, weekly templates and
-# who is an admin all live in the database, edited from the bot itself, so none of that
-# needs a deploy.
+# This file holds settings an operator changes. Offices, rosters, weekly templates, who
+# is an admin, and *when* each message goes out all live in the database, edited from the
+# bot itself, so none of that needs a deploy. The times are under /admin → ⏰ Время
+# рассылок: the attendance reminder, Tempo, the holiday greeting, the schedule extension
+# and the end of the workday that Tempo counts down to.
 #
 # Unknown keys are a startup error, not a silent default — if you misspell something here
 # the bot refuses to start rather than quietly ignoring it.
@@ -11,7 +13,6 @@ timezone: Asia/Almaty
 
 reminders:
   attendance:
-    time: "15:30"
     # One rule, no weekday special-casing: announce the next working day.
     # Mon→Tue and Fri→Mon both fall out of it; listing `sun` is what covers Sun→Monday.
     runOn: [mon, tue, wed, thu, fri, sun]
@@ -27,7 +28,6 @@ schedule:
   horizonWeeks: 6           # generated and visible
   freezeWeeks: 1            # announced and immutable
   maxDaysPerWeek: 5
-  autoExtend: { weekday: thu, time: "10:00" }
   holidayCalendar: KZ
   absencePolicy: NO_DEBT    # time away accrues no obligation to make up
   surplusClamp: 10
@@ -60,7 +60,7 @@ personality:
 ai:
   enabled: true
   model: gpt-4.1-nano       # cheapest nano-class chat model; one line to change
-  maxTokens: 400
+  maxTokens: 400           # the short things reminders ask for; chat has its own below
   temperature: 1.0
   # Both are defaults. An admin can move either from /admin → 🤖 Лимиты ИИ without a
   # deploy, and can give one person their own allowance from their card; what is stored
@@ -81,6 +81,9 @@ ai:
     generalFacts: 20        # ring buffer, per office
     personalFacts: 10       # ring buffer, per employee
     factChars: 120
+    # One reply. A ceiling rather than a target: the model is told to be as short as the
+    # question allows, and this leaves room for the questions that need a real answer.
+    maxTokens: 2000
 
 health:
   pingUrl: ""               # optional dead-man's switch, e.g. healthchecks.io

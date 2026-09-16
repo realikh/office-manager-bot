@@ -7,7 +7,7 @@ a permission check you have to remember to write is one you will eventually forg
 from __future__ import annotations
 
 import html
-from datetime import timedelta
+from datetime import time, timedelta
 from typing import Any
 
 from aiogram import Bot, F, Router
@@ -37,6 +37,7 @@ from tabelshchik.adapters.telegram.keyboards import (
     office_list,
     office_menu,
     office_settings_menu,
+    times_menu,
     weekday_picker,
 )
 from tabelshchik.adapters.telegram.middlewares import AdminOnly
@@ -46,6 +47,7 @@ from tabelshchik.application import (
     manage_limits,
     manage_offices,
     manage_roster,
+    manage_times,
 )
 from tabelshchik.application.build_report import ReportDay, build_report
 from tabelshchik.application.context import BotContext
@@ -57,6 +59,9 @@ from tabelshchik.application.manage_limits import (
 )
 from tabelshchik.application.manage_offices import OfficeError
 from tabelshchik.application.manage_roster import RosterError
+from tabelshchik.application.manage_times import TimeError
+from tabelshchik.application.policy import RUSH_WINDOW_MINUTES
+from tabelshchik.application.ports import ScheduleTime
 from tabelshchik.application.regenerate_schedule import regenerate
 from tabelshchik.application.send_attendance_reminder import send_attendance_reminder
 from tabelshchik.application.voice import format_date, render_days
@@ -89,6 +94,10 @@ class SetLimit(StatesGroup):
     waiting_for_value = State()
 
 
+class SetTime(StatesGroup):
+    waiting_for_value = State()
+
+
 class CreateOffice(StatesGroup):
     waiting_for_name = State()
 
@@ -118,6 +127,7 @@ _IN_A_FLOW = (
     EditEmployee.waiting_for_username,
     GrantAdmin.waiting_for_user_id,
     SetLimit.waiting_for_value,
+    SetTime.waiting_for_value,
     CreateOffice.waiting_for_name,
     EditOffice.waiting_for_name,
     EditOffice.waiting_for_chat_id,
@@ -244,6 +254,8 @@ def _return_screen(
         return admins_screen(services, viewer_id=viewer_id)
     if tag == "limits":
         return limits_screen(services)
+    if tag == "times":
+        return times_screen(services)
     if tag == "roster":
         return roster_screen(services, arg)
     if tag == "desks":
@@ -1455,6 +1467,108 @@ def _parse_limit(raw: str) -> int | None:
     return int(raw) if raw.isdecimal() else None
 
 
+# ------------------------------------------------------------------- delivery times
+#
+# These were `app.yaml` keys, so moving a reminder by ten minutes was a deploy. Saving one
+# here reschedules the running bot straight away.
+
+#: What each `adm:time:` button edits, and what the prompt says about it.
+_TIME_TARGETS: dict[str, tuple[ScheduleTime, str]] = {
+    "attendance": (ScheduleTime.ATTENDANCE, "Во сколько напоминать, кто завтра в офисе?"),
+    "tempo": (
+        ScheduleTime.TEMPO,
+        "Во сколько напоминать про Tempo в последний рабочий день недели и месяца? "
+        f"Если до конца рабочего дня останется не больше {RUSH_WINDOW_MINUTES} минут, "
+        "бот предложит потратить их на Tempo.",
+    ),
+    "end": (
+        ScheduleTime.WORKDAY_END,
+        "Во сколько заканчивается рабочий день? От этого времени Tempo отсчитывает "
+        "оставшиеся минуты.",
+    ),
+    "holiday": (ScheduleTime.HOLIDAY, "Во сколько поздравлять с праздниками?"),
+}
+
+
+@router.callback_query(F.data == "adm:times")
+async def times(query: CallbackQuery, services: BotContext) -> None:
+    await _replace(query, *times_screen(services))
+
+
+@router.callback_query(F.data.startswith("adm:time:"))
+async def start_setting_time(query: CallbackQuery, state: FSMContext) -> None:
+    target = _tail(query)
+    if target == "extend":
+        prompt = (
+            "Когда продлевать расписание и рассылать обновлённую таблицу? Отправьте день и "
+            "время, например «чт 10:00», или только время, чтобы оставить день."
+        )
+    elif target in _TIME_TARGETS:
+        prompt = f"{_TIME_TARGETS[target][1]} Отправьте время в формате ЧЧ:ММ, например 17:50."
+    else:
+        await query.answer("Неизвестная настройка")
+        return
+    await _ask(
+        query,
+        state,
+        SetTime.waiting_for_value,
+        f"{prompt}\n\n«{SKIP}» — вернуть значение по умолчанию. "
+        "Если новое время сегодня уже прошло, оно сработает со следующего раза.",
+        back_to="times",
+        target=target,
+    )
+
+
+@router.message(SetTime.waiting_for_value)
+async def apply_time(message: Message, state: FSMContext, services: BotContext) -> None:
+    if await _refused_a_command(message, state):
+        return
+
+    raw = (message.text or "").strip()
+    data = await state.get_data()
+    target = str(data.get("target", ""))
+    actor_id = message.from_user.id if message.from_user else 0
+
+    try:
+        if target == "extend":
+            if raw == SKIP:
+                weekday, moment = None, None
+            else:
+                parsed = manage_times.parse_extend(
+                    raw, services.voice.catalog.common.weekdays_short
+                )
+                if parsed is None:
+                    await _step(message, state, "Нужно «чт 10:00» или «10:00».", cancel_keyboard())
+                    return
+                weekday, moment = parsed
+            manage_times.set_extend(
+                weekday=weekday,
+                value=moment,
+                actor_id=actor_id,
+                settings=services.settings,
+                jobs=services.office_jobs,
+                audit=services.audit,
+            )
+        elif target in _TIME_TARGETS:
+            value = None if raw == SKIP else manage_times.parse_time(raw)
+            if raw != SKIP and value is None:
+                await _step(message, state, "Нужно время в формате ЧЧ:ММ.", cancel_keyboard())
+                return
+            manage_times.set_time(
+                which=_TIME_TARGETS[target][0],
+                value=value,
+                actor_id=actor_id,
+                settings=services.settings,
+                jobs=services.office_jobs,
+                audit=services.audit,
+            )
+    except TimeError as error:
+        await _step(message, state, str(error), cancel_keyboard())
+        return
+
+    await _finish(message, state, *times_screen(services))
+
+
 # ----------------------------------------------------------------------------- admins
 #
 # Owner-only, twice over. These handlers hide the buttons, and `manage_admins` refuses
@@ -1896,6 +2010,57 @@ def limits_screen(services: BotContext) -> tuple[str, InlineKeyboardMarkup]:
         lines.append("Личные лимиты меняются в карточке сотрудника.")
 
     return ("\n".join(lines), limits_menu())
+
+
+def times_screen(services: BotContext) -> tuple[str, InlineKeyboardMarkup]:
+    """When everything goes out, and what the Tempo time means in practice.
+
+    The times are in the text, so a changed one always changes the message — Telegram
+    refuses to redraw a message that has not changed.
+    """
+    times = services.reminder_times
+    common = services.voice.catalog.common
+    gap = times.tempo_gap_minutes
+    tempo_effect = (
+        f"⏳ за {gap} мин до конца дня — предложит потратить их на Tempo"
+        if gap
+        else f"⏳ без отсчёта: до конца дня больше {RUSH_WINDOW_MINUTES} мин или день уже кончился"
+    )
+
+    lines = [
+        "<b>Время рассылок</b>",
+        f"Часовой пояс: {html.escape(services.app_timezone)}",
+        "",
+        f"📣 Кто завтра в офисе: <b>{_hhmm(times.attendance)}</b>",
+        f"📝 Tempo: <b>{_hhmm(times.tempo)}</b>, в последний рабочий день недели и месяца",
+        f"      {tempo_effect}",
+        f"🏁 Конец рабочего дня: <b>{_hhmm(times.workday_end)}</b>",
+        f"🎉 Поздравление с праздником: <b>{_hhmm(times.holiday)}</b>",
+        f"🔄 Продление расписания: <b>{common.weekdays_short[times.extend_weekday]} "
+        f"{_hhmm(times.extend)}</b>",
+    ]
+
+    # One line per calendar in use rather than per office: two offices on KZ would only
+    # say the same thing twice. Shown so an admin can tell a stale calendar at a glance.
+    calendar = services.holiday_calendar
+    today = services.clock.today()
+    codes = sorted({office.holiday_calendar for office in services.offices.active_offices()})
+    upcoming = [(code, calendar.next_celebration(code, today)) for code in codes]
+    known = [(code, found) for code, found in upcoming if found is not None]
+    if known:
+        lines.append("")
+        lines.append(f"Ближайший праздник ({html.escape(calendar.source())}):")
+        lines += [
+            f"• {html.escape(code)}: {format_date(found.day, common)} — "
+            f"{html.escape(found.local_name)}"
+            for code, found in known
+        ]
+
+    return ("\n".join(lines), times_menu())
+
+
+def _hhmm(moment: time) -> str:
+    return moment.strftime("%H:%M")
 
 
 def admins_screen(services: BotContext, *, viewer_id: int) -> tuple[str, InlineKeyboardMarkup]:

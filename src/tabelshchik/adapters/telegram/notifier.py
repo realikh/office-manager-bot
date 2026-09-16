@@ -25,10 +25,12 @@ MAX_CAPTION_LENGTH = 1024
 
 @dataclass
 class TelegramNotifier:
-    """Sends messages and manages one pin per kind.
+    """Sends messages, and pins them.
 
-    Pins are replaced by kind rather than accumulated, so a chat ends up with one pinned
-    Tempo reminder rather than one per week.
+    `send(pin=True)` replaces a pin by kind using a dict that lives only as long as the
+    process; the attendance reminder is the one caller. The Tempo reminder pins through
+    `pin`/`unpin` instead and keeps its record in the database, because a pin nobody can
+    find after a redeploy is a pin that stays up forever.
     """
 
     bot: Bot
@@ -86,6 +88,25 @@ class TelegramNotifier:
             logger.exception("failed to send document to chat %s", chat_id)
             return None
         return SentMessage(chat_id=chat_id, message_id=message.message_id)
+
+    async def pin(self, chat_id: int, message_id: int, *, silent: bool = False) -> bool:
+        """Pin one message. Not silent is the point: the pin is what notifies everyone."""
+        try:
+            await self.bot.pin_chat_message(chat_id, message_id, disable_notification=silent)
+        except TelegramAPIError:
+            logger.exception("failed to pin message %s in chat %s", message_id, chat_id)
+            return False
+        return True
+
+    async def unpin(self, chat_id: int, message_id: int) -> bool:
+        try:
+            await self.bot.unpin_chat_message(chat_id, message_id=message_id)
+        except TelegramAPIError:
+            # Already unpinned by hand, or the message is gone. Either way there is
+            # nothing left to take down.
+            logger.warning("could not unpin %s in chat %s", message_id, chat_id)
+            return False
+        return True
 
     async def _replace_pin(self, message: SentMessage, *, kind: str, silent: bool) -> None:
         """Pin the new message before unpinning the old one.

@@ -29,9 +29,14 @@ WHEN_TOKEN = "{when}"
 DATE_TOKEN = "{date}"
 OFFICE_TOKEN = "{office}"
 TAIL_TOKEN = "{tail}"
+MINUTES_TOKEN = "{minutes}"
+HOLIDAY_TOKEN = "{holiday}"
 
 #: Long enough for a real clause, short enough that a runaway generation is rejected.
 MAX_TAIL_LENGTH = 160
+#: A whole message this time — a greeting or a Tempo nag — but still a chat message, not
+#: an essay the whole office scrolls past.
+MAX_ANNOUNCEMENT_LENGTH = 500
 #: An epithet is a title, not a sentence.
 MAX_EPITHET_LENGTH = 48
 
@@ -39,6 +44,10 @@ _BRACE = re.compile(r"[{}]")
 _DIGIT = re.compile(r"\d")
 _LETTERS = re.compile(r"[A-Za-zА-Яа-яЁё]")
 _WORD = re.compile(r"[\w']+", re.UNICODE)
+_NUMBER = re.compile(r"\d+")
+#: The link is ours. A model that writes its own is at best a duplicate and at worst a
+#: plausible-looking address that goes somewhere else.
+_URL = re.compile(r"https?:|://|www\.|\.(?:com|ru|kz|org|net|io)\b", re.IGNORECASE)
 
 #: Below this, a word is matched whole rather than stemmed.
 _MIN_PREFIX = 4
@@ -54,6 +63,8 @@ class CommonText:
     on_weekday: str
     #: Prefixed to messages when two offices share one chat.
     office_header: str = "🏢 <b>{office}</b>"
+    #: "минуту", "минуты", "минут" — the accusative forms for 1, 2–4 and 5–20.
+    minutes: tuple[str, str, str] = ("минуту", "минуты", "минут")
 
     @property
     def temporal_words(self) -> tuple[str, ...]:
@@ -183,8 +194,29 @@ def _accusative(weekday: str) -> str:
     return weekday
 
 
+def plural_minutes(count: int, common: CommonText) -> str:
+    """`10 минут`, `21 минуту`, `3 минуты` — as the phrase "потратьте последние …" needs."""
+    one, few, many = common.minutes
+    if 11 <= count % 100 <= 14:
+        word = many
+    elif count % 10 == 1:
+        word = one
+    elif 2 <= count % 10 <= 4:
+        word = few
+    else:
+        word = many
+    return f"{count} {word}"
+
+
 def render_template(
-    template: str, *, when: str = "", date_text: str = "", office_name: str = "", tail: str = ""
+    template: str,
+    *,
+    when: str = "",
+    date_text: str = "",
+    office_name: str = "",
+    tail: str = "",
+    minutes: str = "",
+    holiday: str = "",
 ) -> str:
     """Fill one of our own templates.
 
@@ -196,6 +228,8 @@ def render_template(
     rendered = rendered.replace(WHEN_TOKEN, html.escape(when))
     rendered = rendered.replace(DATE_TOKEN, html.escape(date_text))
     rendered = rendered.replace(OFFICE_TOKEN, f"«{html.escape(office_name)}»")
+    rendered = rendered.replace(MINUTES_TOKEN, html.escape(minutes))
+    rendered = rendered.replace(HOLIDAY_TOKEN, html.escape(holiday))
     # The tail is already escaped by its own guard, which has to inspect the raw text.
     return rendered.replace(TAIL_TOKEN, tail)
 
@@ -224,6 +258,44 @@ def render_tail(
     if _is_shouting(line):
         return None
 
+    return html.escape(_as_sentence(line))
+
+
+def render_announcement(
+    raw: str,
+    *,
+    office_name: str,
+    common: CommonText,
+    forbidden: Iterable[str] = (),
+    banned_terms: Iterable[str] = (),
+    allow_words: Iterable[str] = (),
+    allow_numbers: Iterable[int] = (),
+    max_length: int = MAX_ANNOUNCEMENT_LENGTH,
+) -> str | None:
+    """A whole generated message — a Tempo nag or a holiday greeting — or None.
+
+    The same guards as a tail, loosened in exactly two places and nowhere else: the
+    caller may allow today's own weekday and month ("С пятницей!", "С 8 Марта!"), and
+    specific numbers it has put there itself (the minutes left in the day). Any other
+    weekday, date or number is still the model inventing a fact.
+    """
+    line = _collapse(raw)
+    if not line or len(line) > max_length:
+        return None
+    if _URL.search(line):
+        return None
+    if not _is_clean(
+        line,
+        office_name=office_name,
+        common=common,
+        forbidden=forbidden,
+        banned_terms=banned_terms,
+        allow_words=allow_words,
+        allow_numbers=allow_numbers,
+    ):
+        return None
+    if _is_shouting(line):
+        return None
     return html.escape(_as_sentence(line))
 
 
@@ -348,6 +420,8 @@ def _is_clean(
     common: CommonText,
     forbidden: Iterable[str],
     banned_terms: Iterable[str],
+    allow_words: Iterable[str] = (),
+    allow_numbers: Iterable[int] = (),
 ) -> bool:
     """The guards shared by every piece of generated text.
 
@@ -359,12 +433,19 @@ def _is_clean(
 
     if _BRACE.search(line) or "@" in line or "<" in line or ">" in line:
         return False
-    # Digits are how a date, a headcount or an invented statistic gets in.
-    if _DIGIT.search(line):
+    # Digits are how a date, a headcount or an invented statistic gets in. The only ones
+    # allowed are those the caller put in the brief itself.
+    allowed_numbers = {str(number) for number in allow_numbers}
+    if allowed_numbers:
+        if any(number not in allowed_numbers for number in _NUMBER.findall(line)):
+            return False
+    elif _DIGIT.search(line):
         return False
     # The weekday and the date are already in the header, and the office name is already
     # in quotes. Either repeated is the stutter this whole split exists to prevent.
-    if _repeats(lowered, (*common.temporal_words, office_name)):
+    allowed_words = {word.casefold() for word in allow_words}
+    temporal = [word for word in common.temporal_words if word.casefold() not in allowed_words]
+    if _repeats(lowered, (*temporal, office_name)):
         return False
     # Names are injected by us, in a fixed format. A model that produced one has either
     # been fed data it should not have, or invented a colleague by coincidence.
@@ -523,11 +604,63 @@ class Voice:
         date_text: str = "",
         office_name: str = "",
         tail: str = "",
+        minutes: str = "",
+        holiday: str = "",
     ) -> str:
         template = self.catalog.variant(key, mood, office_id=office_id, day=day)
         return render_template(
-            template, when=when, date_text=date_text, office_name=office_name, tail=tail
+            template,
+            when=when,
+            date_text=date_text,
+            office_name=office_name,
+            tail=tail,
+            minutes=minutes,
+            holiday=holiday,
         )
+
+    async def announce(
+        self,
+        mood: Mood,
+        *,
+        brief: str,
+        fallback: str,
+        office_name: str,
+        forbidden: Sequence[str] = (),
+        allow_words: Sequence[str] = (),
+        allow_numbers: Sequence[int] = (),
+    ) -> Announcement:
+        """A whole message in today's voice, or ``fallback`` if the model is not up to it.
+
+        ``fallback`` is already rendered and escaped. The brief says what the message is
+        for; the persona says how it sounds. Links, names and headers are the caller's to
+        add — the model is told they exist so it does not write its own.
+        """
+        persona = self.catalog.line("ai.persona", mood)
+        if self.model is None or not self.moods.enabled or not persona:
+            return Announcement(fallback)
+
+        completion = await self.model.complete(
+            _announcement_system_prompt(persona),
+            brief,
+            max_tokens=self.max_tokens,
+            temperature=self.temperature,
+            json_object=True,
+        )
+        payload = _parse_json(completion.text) if completion is not None else None
+        raw = payload.get("text") if payload is not None else None
+        if not isinstance(raw, str):
+            return Announcement(fallback)
+
+        cleaned = render_announcement(
+            raw,
+            office_name=office_name,
+            common=self.catalog.common,
+            forbidden=forbidden,
+            banned_terms=self.moods.banned_terms,
+            allow_words=allow_words,
+            allow_numbers=allow_numbers,
+        )
+        return Announcement(cleaned, generated=True) if cleaned else Announcement(fallback)
 
     def emojis(self, mood: Mood, *, office_id: str, day: date, count: int) -> tuple[str, ...]:
         """One per person, distinct while the pool lasts.
@@ -641,6 +774,13 @@ class Voice:
         return html.escape(_as_sentence(line)) if line else ""
 
 
+@dataclass(frozen=True, slots=True)
+class Announcement:
+    text: str
+    #: Whether the model wrote it, as opposed to the hand-written fallback.
+    generated: bool = False
+
+
 def _offered(
     values: list[object], index: int, gender: str, clean: Callable[[str, str], str | None]
 ) -> str | None:
@@ -690,3 +830,18 @@ def _decoration_user_prompt(genders: Sequence[str]) -> str:
         for index, gender in enumerate(genders)
     )
     return f"Нужно {len(genders)} титулов. Род по порядку: {listed}."
+
+
+def _announcement_system_prompt(persona: str) -> str:
+    return (
+        f"{persona}\n\n"
+        "Ты пишешь одно сообщение в рабочий чат. Задание — в сообщении пользователя.\n"
+        'Верни СТРОГО JSON вида: {"text": "..."}\n'
+        "text — готовое сообщение на русском языке: два-четыре предложения, не длиннее "
+        "четырёхсот символов, в твоём сегодняшнем настроении. Можно одно-два эмодзи.\n"
+        "Ссылку, упоминания людей и название офиса бот добавит сам — не пиши их.\n"
+        "Запрещено: цифры (кроме тех, что прямо разрешены в задании), даты, дни недели и "
+        "месяцы (кроме разрешённых в задании), слово «завтра», имена людей, @упоминания, "
+        "ссылки, разметка, капслок.\n"
+        "Иронизируй над обстоятельствами, никогда над людьми."
+    )

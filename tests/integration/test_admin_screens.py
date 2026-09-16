@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from tabelshchik.adapters.clock import FixedClock
+from tabelshchik.adapters.holiday_calendar import PackageHolidayCalendar
 from tabelshchik.adapters.telegram.routers.admin import (
     MAX_DESKS,
     _parse_count,
@@ -27,9 +28,11 @@ from tabelshchik.adapters.telegram.routers.admin import (
     limits_screen,
     office_screen,
     roster_screen,
+    times_screen,
 )
 from tabelshchik.application.ids import MAX_ID_LENGTH, MAX_OFFICE_ID_LENGTH
-from tabelshchik.application.policy import ChatPolicy
+from tabelshchik.application.manage_times import reminder_times
+from tabelshchik.application.policy import ChatPolicy, ReminderTimes
 from tabelshchik.application.voice import MoodPolicy, Voice
 from tabelshchik.bootstrap.mapping import catalog
 from tabelshchik.config.loader import parse_file
@@ -69,6 +72,12 @@ class Ctx:
         self.usage = SqlUsageStore(sessions)
         self.clock = FixedClock(NOW)
         self.voice = Voice(catalog=CATALOG, moods=MoodPolicy(weights={Mood.TOXIC: 1}))
+        self.holiday_calendar = PackageHolidayCalendar()
+        self.app_timezone = "Asia/Almaty"
+
+    @property
+    def reminder_times(self) -> ReminderTimes:
+        return reminder_times(self.settings)
 
     @property
     def chat_policy(self) -> ChatPolicy:
@@ -383,6 +392,7 @@ def test_every_callback_a_screen_emits_fits_telegram_s_limit(sessions) -> None:
         fixed_screen(ctx, long_office),
         fixed_day_screen(ctx, long_office, MONDAY),
         roster_screen(ctx, long_office),
+        times_screen(ctx),
     ]
     for screen in screens:
         assert screen is not None
@@ -427,3 +437,53 @@ def test_a_card_offers_a_way_to_change_it(ctx) -> None:
     card = card_screen(ctx, "anya")
     assert card is not None
     assert "adm:limemp:anya" in callbacks(card[1])
+
+
+# ------------------------------------------------------------------- delivery times
+
+
+def test_the_times_screen_shows_what_is_in_force(ctx) -> None:
+    text, _markup = times_screen(ctx)
+    assert "15:30" in text
+    assert "17:50" in text
+    assert "18:00" in text
+    assert "чт 10:00" in text
+    assert "за 10 мин до конца дня" in text
+
+
+def test_a_moved_time_is_what_the_screen_reports(ctx) -> None:
+    """The time is in the text, so a change always changes the message — Telegram will
+    not redraw one that has not."""
+    from datetime import time
+
+    from tabelshchik.application.ports import ScheduleTime
+
+    ctx.settings.set_schedule_time(ScheduleTime.TEMPO, time(17, 20))
+    text = times_screen(ctx)[0]
+    assert "17:20" in text
+    assert "без отсчёта" in text
+
+
+def test_the_times_screen_names_the_next_holiday_and_where_it_came_from(ctx) -> None:
+    text = times_screen(ctx)[0]
+    assert "Ближайший праздник (holidays " in text
+    assert "KZ:" in text
+
+
+def test_every_time_button_has_a_prompt() -> None:
+    from tabelshchik.adapters.telegram.keyboards import times_menu
+    from tabelshchik.adapters.telegram.routers.admin import _TIME_TARGETS
+
+    targets = [
+        data.removeprefix("adm:time:")
+        for data in callbacks(times_menu())
+        if data.startswith("adm:time:")
+    ]
+    assert len(targets) == 5
+    assert all(target in _TIME_TARGETS or target == "extend" for target in targets)
+
+
+def test_the_main_menu_leads_to_the_times_screen() -> None:
+    from tabelshchik.adapters.telegram.keyboards import main_menu
+
+    assert "adm:times" in callbacks(main_menu())

@@ -28,7 +28,7 @@ def main_menu(*, owner: bool = False) -> InlineKeyboardMarkup:
         (button("⚖️ Справедливость", "adm:fair"), button("🎭 Настроение", "adm:mood")),
         (button("📊 Состояние", "adm:status"), button("⚙️ Конфиг", "adm:config")),
         (button("💾 Резервная копия", "adm:backup"),),
-        (button("🤖 Лимиты ИИ", "adm:limits"),),
+        (button("🤖 Лимиты ИИ", "adm:limits"), button("⏰ Время рассылок", "adm:times")),
     ]
     if owner:
         rows.append((button("👑 Администраторы", "adm:admins"),))
@@ -130,6 +130,16 @@ def calendar_picker(office_id: str, codes: Sequence[str], current: str) -> Inlin
         for code in codes
     ]
     return keyboard(*rows, (button("‹ Назад", f"adm:oset:{office_id}"),))
+
+
+def times_menu() -> InlineKeyboardMarkup:
+    """One button per time. Each opens a typed prompt; the data names what it edits."""
+    return keyboard(
+        (button("📣 Выход в офис", "adm:time:attendance"),),
+        (button("📝 Tempo", "adm:time:tempo"), button("🏁 Конец дня", "adm:time:end")),
+        (button("🎉 Праздники", "adm:time:holiday"), button("🔄 Продление", "adm:time:extend")),
+        (button("‹ Назад", "adm:menu"),),
+    )
 
 
 def limits_menu() -> InlineKeyboardMarkup:

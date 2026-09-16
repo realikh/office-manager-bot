@@ -143,18 +143,38 @@ class AdminStore(Protocol):
     def transfer_ownership(self, *, to_user_id: int, at: datetime) -> int | None: ...
 
 
+class ScheduleTime(StrEnum):
+    """The times of day an admin can move from the bot.
+
+    The values are the keys in the `setting` table. An enum rather than strings at the call
+    sites, so a typo is a type error instead of a setting that is saved and never read.
+    """
+
+    ATTENDANCE = "time.attendance"
+    TEMPO = "time.tempo"
+    HOLIDAY = "time.holiday"
+    EXTEND = "time.extend"
+    #: Schedules nothing. It is what the Tempo reminder counts its minutes down to.
+    WORKDAY_END = "time.workday_end"
+
+
 class SettingsStore(Protocol):
     """The handful of numbers an admin may change without a deploy.
 
     Named accessors rather than a generic bag, so a misspelled key cannot silently do
     nothing — which is the failure `extra="forbid"` exists to prevent in the config files.
-    `None` means nothing has been set and the configured default applies.
+    `None` means nothing has been set and the default applies.
     """
 
     def ai_daily_limit(self) -> int | None: ...
     def ai_global_daily_limit(self) -> int | None: ...
     def set_ai_daily_limit(self, value: int | None) -> None: ...
     def set_ai_global_daily_limit(self, value: int | None) -> None: ...
+    def schedule_time(self, which: ScheduleTime) -> time | None: ...
+    def set_schedule_time(self, which: ScheduleTime, value: time | None) -> None: ...
+    #: 0 = Monday. Only the horizon extender runs weekly; everything else is daily.
+    def extend_weekday(self) -> int | None: ...
+    def set_extend_weekday(self, value: int | None) -> None: ...
 
 
 class OfficeJobs(Protocol):
@@ -168,6 +188,9 @@ class OfficeJobs(Protocol):
 
     def add_office(self, office_id: str) -> None: ...
     def drop_office(self, office_id: str) -> None: ...
+    #: Rebuild every office's triggers from the stored times. Called after an admin moves
+    #: one, so the change applies to the next occurrence rather than the next deploy.
+    def reschedule(self) -> None: ...
 
 
 class OfficeAdminStore(Protocol):
@@ -314,6 +337,9 @@ class MaintenanceStore(Protocol):
     def delete_chat_messages_before(self, cutoff: datetime) -> int: ...
     def delete_chat_memory_before(self, cutoff: datetime) -> int: ...
     def delete_absences_before(self, cutoff: date) -> int: ...
+    #: Only posts that are no longer pinned: the current pin is what the next reminder
+    #: has to find in order to take it down.
+    def delete_posts_before(self, cutoff: date) -> int: ...
     def database_bytes(self) -> int: ...
     def vacuum(self) -> None: ...
     def backup_to(self, path: str) -> None: ...
@@ -361,6 +387,71 @@ class Notifier(Protocol):
         caption: str = "",
         silent: bool = False,
     ) -> SentMessage | None: ...
+
+    #: Both return whether Telegram accepted the call, and neither raises. A pin that did
+    #: not happen is recorded as such, so nobody later tries to take it down.
+    async def pin(self, chat_id: int, message_id: int, *, silent: bool = False) -> bool: ...
+    async def unpin(self, chat_id: int, message_id: int) -> bool: ...
+
+
+class PostKind(StrEnum):
+    """Scheduled posts the bot has to be able to find again.
+
+    Stored by `_enum`, so the values are what is in the database.
+    """
+
+    TEMPO = "TEMPO"
+    HOLIDAY = "HOLIDAY"
+
+
+@dataclass(frozen=True, slots=True)
+class PostRecord:
+    office_id: str
+    kind: PostKind
+    day: date
+    chat_id: int
+    message_id: int
+    pinned: bool = False
+
+
+class PostStore(Protocol):
+    """What the bot has posted on a schedule, and which of it is still pinned.
+
+    Two jobs. It is the pin tracker — the previous Tempo reminder has to be unpinned before
+    the next one is pinned, and that has to survive a restart, which an in-memory dict did
+    not. And it is a once-a-day guard: moving a reminder's time after it has fired gives
+    the same day a second occurrence with a different key, which the job ledger alone
+    would happily run.
+    """
+
+    def sent(self, office_id: str, kind: PostKind, day: date) -> bool: ...
+    #: Any office. Two offices sharing a group should not both wish it a happy holiday.
+    def sent_to_chat(self, chat_id: int, kind: PostKind, day: date) -> bool: ...
+    def pinned(self, office_id: str, kind: PostKind, chat_id: int) -> Sequence[PostRecord]: ...
+    def record(self, post: PostRecord, *, at: datetime) -> None: ...
+    def mark_unpinned(self, office_id: str, kind: PostKind, day: date, *, at: datetime) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class Celebration:
+    """A public holiday worth congratulating people on.
+
+    Not every day off is one: a Saturday holiday moved onto Monday, or a bridge day
+    transferred by decree, is a day off without being a celebration of anything.
+    """
+
+    day: date
+    #: In English, which the model understands reliably whatever the country.
+    name: str
+    #: As the country writes it — Kazakh for KZ. Used in the hand-written fallback.
+    local_name: str
+
+
+class HolidayCalendar(Protocol):
+    def celebrations(self, country: str, day: date) -> Sequence[Celebration]: ...
+    def next_celebration(self, country: str, after: date) -> Celebration | None: ...
+    #: Which data the answers came from, so an admin can tell a stale calendar at a glance.
+    def source(self) -> str: ...
 
 
 @dataclass(frozen=True, slots=True)

@@ -18,7 +18,10 @@ class RecordingNotifier:
 
     messages: list[tuple[int, str, bool]] = field(default_factory=list)
     documents: list[tuple[int, str, int, str]] = field(default_factory=list)
+    #: ("pin" | "unpin", chat_id, message_id), in call order.
+    pin_calls: list[tuple[str, int, int]] = field(default_factory=list)
     fail: bool = False
+    fail_pins: bool = False
     _next_id: int = 1000
 
     async def send(
@@ -50,6 +53,18 @@ class RecordingNotifier:
         self.documents.append((chat_id, filename, len(content), caption))
         self._next_id += 1
         return SentMessage(chat_id=chat_id, message_id=self._next_id)
+
+    async def pin(self, chat_id: int, message_id: int, *, silent: bool = False) -> bool:
+        self.pin_calls.append(("pin", chat_id, message_id))
+        return not self.fail_pins
+
+    async def unpin(self, chat_id: int, message_id: int) -> bool:
+        self.pin_calls.append(("unpin", chat_id, message_id))
+        return not self.fail_pins
+
+    @property
+    def last_message_id(self) -> int:
+        return self._next_id
 
     @property
     def last_text(self) -> str:

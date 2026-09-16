@@ -16,7 +16,9 @@ from tabelshchik.config.loader import (
 )
 from tabelshchik.config.models import AppConfig, OfficeSeed
 
-MINIMAL_APP = {"reminders": {"attendance": {"time": "15:30"}}}
+#: Nothing is required any more: the one mandatory key was the reminder time, and that
+#: lives in the database now.
+MINIMAL_APP: dict = {"timezone": "Asia/Almaty"}
 
 
 def write(directory: Path, name: str, payload: dict) -> Path:
@@ -93,6 +95,26 @@ def test_an_unknown_key_is_a_startup_error_not_a_silent_default(tmp_path: Path) 
     nothing for months."""
     with pytest.raises(ConfigError, match="unknown setting"):
         load(setup(tmp_path, app={**MINIMAL_APP, "timezon": "Asia/Almaty"}))
+
+
+@pytest.mark.parametrize(
+    "app",
+    [
+        {"reminders": {"attendance": {"time": "15:30"}}},
+        {"schedule": {"autoExtend": {"weekday": "thu", "time": "10:00"}}},
+    ],
+)
+def test_a_time_left_in_the_file_is_refused_rather_than_ignored(tmp_path: Path, app) -> None:
+    """Times moved to /admin. A leftover key that silently did nothing would be exactly
+    the "looks configured for months" failure `extra="forbid"` exists to prevent."""
+    with pytest.raises(ConfigError, match="unknown setting"):
+        load(setup(tmp_path, app={**MINIMAL_APP, **app}))
+
+
+def test_the_chat_reply_budget_is_separate_from_the_reminders(tmp_path: Path) -> None:
+    config = load(setup(tmp_path))
+    assert config.app.ai.chat.max_tokens == 2000
+    assert config.app.ai.max_tokens == 400
 
 
 def test_the_error_names_the_file_and_the_key(tmp_path: Path) -> None:

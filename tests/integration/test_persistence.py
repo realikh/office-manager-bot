@@ -628,3 +628,26 @@ def test_a_backup_produces_a_readable_copy(sessions, tmp_path) -> None:
     finally:
         connection.close()
     assert rows == [("ovest",)]
+
+
+def test_old_posts_are_pruned_but_the_pin_still_up_is_not(sessions) -> None:
+    """The pinned reminder is what next week's has to take down. Pruning its record would
+    leave it pinned forever."""
+    from tabelshchik.adapters.db.repositories import SqlMaintenance, SqlPostStore
+    from tabelshchik.application.ports import PostKind, PostRecord
+
+    seed(sessions)
+    posts = SqlPostStore(sessions)
+    old = date(2026, 1, 2)
+    older = date(2026, 1, 9)
+    for day, pinned in ((old, True), (older, True), (date(2026, 1, 1), False)):
+        posts.record(
+            PostRecord("ovest", PostKind.TEMPO, day, chat_id=-1, message_id=day.day, pinned=pinned),
+            at=datetime(2026, 1, 1),
+        )
+    posts.mark_unpinned("ovest", PostKind.TEMPO, old, at=datetime(2026, 1, 9))
+
+    removed = SqlMaintenance(sessions).delete_posts_before(date(2026, 6, 1))
+
+    assert removed == 2
+    assert [post.day for post in posts.pinned("ovest", PostKind.TEMPO, -1)] == [older]

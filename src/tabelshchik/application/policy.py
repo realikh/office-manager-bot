@@ -31,18 +31,55 @@ class SchedulePolicy:
 
 @dataclass(frozen=True, slots=True)
 class TempoPolicy:
-    """When to nag about filling in Tempo."""
+    """When to nag about filling in Tempo.
+
+    On the last working day of the week, and on the last working day of the month — one
+    message when the two coincide. There used to be a third, an early warning around the
+    23rd; it was dropped as one nag too many.
+    """
 
     enabled: bool = True
     url: str = ""
-    #: Weekdays for the recurring nag, 0 = Monday.
-    weekly_weekdays: frozenset[int] = frozenset({4})
-    #: Day of the month for the early warning; rolls forward if it is not a working day,
-    #: and does not fire retroactively if a working day has already passed.
-    warning_day: int = 23
     #: The month-end nag lands on the last *working* day, not the last calendar day.
     month_end: bool = True
     pin: bool = True
+
+
+#: How close to the end of the workday the Tempo reminder has to land before it counts the
+#: minutes down. Further out, "spend your last two hours on Tempo" is not advice anyone
+#: would take, so the message just says its piece instead.
+RUSH_WINDOW_MINUTES = 30
+
+
+@dataclass(frozen=True, slots=True)
+class ReminderTimes:
+    """When the scheduled messages go out.
+
+    These used to be in `app.yaml`, which made moving a reminder by ten minutes a deploy.
+    They live in the database now, and these are the values until an admin changes one.
+    """
+
+    attendance: time = time(15, 30)
+    tempo: time = time(17, 50)
+    holiday: time = time(10, 0)
+    extend: time = time(10, 0)
+    #: 0 = Monday. The horizon extender is the one weekly job.
+    extend_weekday: int = 3
+    workday_end: time = time(18, 0)
+
+    @property
+    def tempo_gap_minutes(self) -> int | None:
+        """Minutes left in the workday when Tempo goes out, if few enough to mention.
+
+        None when the reminder is sent at or after the end of the day, or so early that a
+        countdown would be silly.
+        """
+        gap = _minutes(self.workday_end) - _minutes(self.tempo)
+        return gap if 0 < gap <= RUSH_WINDOW_MINUTES else None
+
+
+def _minutes(moment: time) -> int:
+    return moment.hour * 60 + moment.minute
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,7 +94,9 @@ class ChatPolicy:
     enabled: bool = True
     per_user_daily_limit: int = 10
     global_daily_limit: int = 200
-    max_tokens: int = 400
+    #: A ceiling, not a target. The model is told to answer as briefly as the question
+    #: allows; this only has to leave room for the questions that need a real answer.
+    max_tokens: int = 2000
     temperature: float = 1.0
     triggers: frozenset[str] = frozenset({"mention", "reply", "private"})
     #: How much of the person's own schedule to put in front of the model.

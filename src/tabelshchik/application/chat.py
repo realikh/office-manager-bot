@@ -9,8 +9,14 @@ raised later without walking the roster — only the people deliberately moved s
 
 The model is grounded rather than given tools. It is handed today's date, the asking
 person's own upcoming office days, tomorrow's roster, the thread being replied to, and a
-handful of short facts it previously asked to remember — and nothing else, so there is
-very little for it to get wrong.
+handful of short facts it previously asked to remember. About the office that is all it
+knows, so there is very little for it to get wrong there. About anything else it may
+answer freely — the bot is meant to be worth talking to, not a schedule lookup with a
+personality bolted on.
+
+Length follows the question. A one-line cap made every answer terse, including the ones
+that needed an explanation; the ceiling is now `ChatPolicy.max_tokens`, and the model is
+told to be brief only when brief is enough.
 
 The reply and the decision about what to remember come back in one JSON response. Two
 calls would cost twice as much and could disagree with each other.
@@ -19,6 +25,7 @@ calls would cost twice as much and could disagree with each other.
 from __future__ import annotations
 
 import html
+import re
 from dataclasses import dataclass
 from datetime import date, timedelta
 from enum import StrEnum
@@ -41,9 +48,15 @@ from tabelshchik.application.voice import (
 )
 from tabelshchik.domain.entities import Employee
 from tabelshchik.domain.mood import Mood
+from tabelshchik.domain.rng import stable_hash
 
 MAX_QUESTION_LENGTH = 1000
-MAX_ANSWER_LENGTH = 1500
+#: Characters, before escaping. Longer than one Telegram message on purpose: the router
+#: splits on line breaks, and a detailed answer cut in half mid-thought is worse than two
+#: messages.
+MAX_ANSWER_LENGTH = 6000
+#: Marks an answer the token ceiling cut off, so it does not read as finished.
+CUT_OFF = "…"
 
 
 class ChatRefusal(StrEnum):
@@ -102,14 +115,19 @@ async def answer(
         return ChatReply("", ChatRefusal.EMPTY)
 
     employee = offices.find_employee_by_user_id(user_id)
+    # Every refused attempt gets a different line. The same retort to every message reads
+    # as a stuck bot; a new one each time reads as a bot that is sulking on purpose.
+    nonce = stable_hash("refusal", str(user_id), cleaned)
     if usage.used_today(user_id, today) >= _allowance(employee, policy):
         return ChatReply(
-            _line(voice, "ai.rateLimited", mood, office_id, today), ChatRefusal.USER_LIMIT
+            _line(voice, "ai.rateLimited", mood, office_id, today, nonce=nonce),
+            ChatRefusal.USER_LIMIT,
         )
 
     if usage.total_today(today) >= policy.global_daily_limit:
         return ChatReply(
-            _line(voice, "ai.rateLimited", mood, office_id, today), ChatRefusal.GLOBAL_LIMIT
+            _line(voice, "ai.globalLimited", mood, office_id, today, nonce=nonce),
+            ChatRefusal.GLOBAL_LIMIT,
         )
 
     system = _system_prompt(voice, mood, remember=policy.remember and memories is not None)
@@ -145,7 +163,10 @@ async def answer(
         )
 
     payload = _parse(completion.text)
-    reply = str(payload.get("reply", "")).strip() if payload else completion.text.strip()
+    if payload is not None:
+        reply = str(payload.get("reply", "")).strip()
+    else:
+        reply = _salvage(completion.text)
     if not reply:
         return ChatReply(
             _line(voice, "ai.failed", mood, office_id, today), ChatRefusal.MODEL_FAILED
@@ -155,6 +176,57 @@ async def answer(
         _store(payload.get("remember"), memories, policy, employee, office_id, clock)
 
     return ChatReply(_sanitise(reply, voice))
+
+
+def _salvage(raw: str) -> str:
+    """What to say when the reply was not valid JSON.
+
+    Prose is used as it is. A JSON object that does not parse almost always means the
+    token ceiling cut it off mid-answer — sending that would put `{"reply": "…` in front
+    of twenty people, so the answer is recovered from it instead and marked as cut.
+    """
+    text = raw.strip()
+    if not text.startswith("{"):
+        return text
+
+    match = _REPLY_START.search(text)
+    if match is None:
+        return ""
+    body = text[match.end() :]
+
+    decoded: list[str] = []
+    index = 0
+    while index < len(body):
+        character = body[index]
+        if character == '"':
+            # The closing quote: the reply was complete and only something after it broke.
+            return "".join(decoded).strip()
+        if character != "\\":
+            decoded.append(character)
+            index += 1
+            continue
+        escape = body[index : index + 2]
+        if escape == "\\u":
+            digits = body[index + 2 : index + 6]
+            if len(digits) < 4:
+                break
+            try:
+                decoded.append(chr(int(digits, 16)))
+            except ValueError:
+                break
+            index += 6
+            continue
+        if len(escape) < 2:
+            break
+        decoded.append(_ESCAPES.get(escape[1], escape[1]))
+        index += 2
+
+    recovered = "".join(decoded).strip()
+    return f"{recovered}{CUT_OFF}" if recovered else ""
+
+
+_REPLY_START = re.compile(r'"reply"\s*:\s*"')
+_ESCAPES = {"n": "\n", "t": "\t", "r": "", "b": "", "f": "", "/": "/", '"': '"', "\\": "\\"}
 
 
 def _store(
@@ -200,8 +272,8 @@ def _allowance(employee: Employee | None, policy: ChatPolicy) -> int:
     return policy.per_user_daily_limit
 
 
-def _line(voice: Voice, key: str, mood: Mood, office_id: str, day: date) -> str:
-    return html.escape(voice.catalog.variant(key, mood, office_id=office_id, day=day))
+def _line(voice: Voice, key: str, mood: Mood, office_id: str, day: date, *, nonce: int = 0) -> str:
+    return html.escape(voice.catalog.variant(key, mood, office_id=office_id, day=day, nonce=nonce))
 
 
 def _parse(raw: str) -> dict[str, object] | None:
@@ -226,19 +298,34 @@ def _system_prompt(voice: Voice, mood: Mood, *, remember: bool) -> str:
     The persona sets tone only. It used to name allowed joke topics — "только про
     понедельники, дорогу…" — and the model dutifully mentioned Monday in every answer on
     every day of the week. Hence the explicit instruction not to volunteer the calendar.
+
+    The rules used to cap every answer at three sentences, which made a question about
+    anything real get a shrug. They now say how to decide the length instead.
     """
     persona = voice.catalog.line("ai.persona", mood)
     rules = (
-        "Отвечай на заданный вопрос, по существу и коротко — одно-три предложения, "
-        "на русском языке.\n"
-        "Не здоровайся, не представляйся и не объясняй, кто ты.\n"
+        "Отвечай на любые вопросы: о работе, технологиях, программировании, науке, "
+        "языках, быте, чём угодно. Не отказывайся и не уводи разговор только потому, что "
+        "вопрос не про офис.\n"
+        "Длину выбирай по вопросу. На простой вопрос или реплику — коротко, одной-двумя "
+        "фразами. Если нужно объяснение, инструкция, код, сравнение или совет — отвечай "
+        "подробно и полно, со всеми нужными шагами и деталями, не экономь слова. Не "
+        "растягивай простое и не обрывай сложное.\n"
+        "Оставайся собой: ты Табельщик, и сегодняшнее настроение окрашивает тон любого "
+        "ответа — но не заменяет суть.\n"
+        "Границы: не оскорбляй и не унижай людей, не обсуждай внешность, здоровье и "
+        "личную жизнь коллег, не помогай с тем, что явно вредно или незаконно.\n"
+        "Пиши на русском, если собеседник не пишет на другом языке.\n"
+        "Не здоровайся и не представляйся без повода.\n"
         "Не заговаривай о дне недели, дате или расписании, если тебя об этом не "
         "спросили. Ниже указано, какой сегодня день — используй это, чтобы не ошибиться, "
         "а не чтобы упомянуть.\n"
         "Не повторяй одну и ту же мысль или шутку в каждом ответе.\n"
-        "Про расписание отвечай строго по данным ниже. Если данных нет, так и скажи: "
-        "не выдумывай даты, имена и цифры.\n"
-        "Не используй разметку."
+        "Про расписание и людей этого офиса отвечай строго по данным ниже. Если данных "
+        "нет, так и скажи: не выдумывай даты, имена и цифры.\n"
+        "Оформление — обычный текст без Markdown: без звёздочек, решёток и обратных "
+        "кавычек. Для структуры используй абзацы и списки с «•» или «1.», код пиши "
+        "отдельными строками."
     )
 
     if remember:

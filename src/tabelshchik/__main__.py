@@ -198,7 +198,8 @@ def _validate(args: argparse.Namespace) -> int:
         return 1
 
     print(f"✓ configuration in {directory} is valid")
-    print(f"  timezone {loaded.app.timezone}, reminder at {loaded.app.reminders.attendance.time}")
+    # No times: they live in the database now, and this command touches nothing.
+    print(f"  timezone {loaded.app.timezone}; delivery times are set from /admin")
 
     offices_dir = directory / "offices"
     if offices_dir.is_dir():

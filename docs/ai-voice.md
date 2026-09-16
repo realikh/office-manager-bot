@@ -15,6 +15,12 @@ This is a *structural* guarantee, not a filter. A hallucinating model can produc
 awkward phrase; it cannot announce the wrong day, the wrong office, or a colleague who
 does not exist, because it was never given one to get wrong.
 
+Two messages bend the rule, and only as far as they must: the Tempo reminder and the
+holiday greeting are written whole by the model (see
+[Whole messages](#whole-messages-tempo-and-holidays)). They are told today's weekday, and
+the greeting today's date and the holiday's name, because "С пятницей!" and "С 8 Марта!"
+are the point. The guard then allows exactly those words and numbers and nothing else.
+
 ### Why it is built this way
 
 The reminder used to hand the model a `{date}` token and tell it to include one, without
@@ -31,7 +37,7 @@ was a bare date: `"Никто не просил, но {date} в офис над�
 A guard that detects the repetition would only ever be a filter. Removing the token from
 the model's hands removes the failure mode.
 
-## The four tokens
+## The tokens
 
 | Token | Filled by | Example |
 |---|---|---|
@@ -39,6 +45,9 @@ the model's hands removes the failure mode.
 | `{date}` | us | `14 сентября 2026 года` |
 | `{office}` | us | `«Pine Office Park»` — the quotes are added by the code |
 | `{tail}` | the model, or a written pool | `Кофемашина уже нервничает.` |
+| `{minutes}` | us | `10 минут` — accusative, declined by `plural_minutes` from `common.minutes` |
+| `{holiday}` | us | `«Наурыз мейрамы»` — the country's own name, quotes included |
+| `{url}` | us | only in `tempo.footer`, which is markup and is not escaped |
 
 `{when}` is capitalised and **must be sentence-initial** in every template: at the start
 of the string, or immediately after `.` or `!`. `"Ждём {when}, …"` renders as *"Ждём
@@ -96,6 +105,40 @@ The rendered line loop is over `snapshot.roster`. **Decoration is optional; bein
 reminded is not.** With the model off, broken or out of credit, everyone scheduled still
 gets a tagged line with a written title. There is a test that asserts exactly this.
 
+## Whole messages: Tempo and holidays
+
+`Voice.announce()` asks for one JSON object, `{"text": "…"}`, given the day's persona and a
+brief that the use case writes. The link, the tagged names and the office header are
+added by the code afterwards, and the model is told so. The result goes through
+`render_announcement`; anything off and the hand-written line is sent instead, with no
+sign that anything happened. `Announcement.generated` records which one it was.
+
+**Tempo** (`application/send_tempo_reminder.py`) runs every day at the configured time
+and sends on the last working day of the week, the last working day of the month, or both
+— as one message, from `tempo.monthEnd` when the month is involved. The brief says:
+
+- what today is, and *why* it ends the week when it is not Friday (`пятница — праздник`),
+  because otherwise the model congratulates a Thursday on being Friday;
+- whether the month closes today, and not to congratulate on the week when it does not;
+- if the reminder lands 1–30 minutes before the end of the workday
+  (`ReminderTimes.tempo_gap_minutes`), exactly how many minutes are left and that those
+  are the ones to spend on Tempo. That number is the only one the guard allows. With no
+  gap it is told not to count anything down, and the written line has no `lastMinutes`
+  sentence either.
+
+Then `tempo.footer` (the link as tappable text), then everyone active, tagged. The
+message is pinned after every earlier Tempo pin recorded in `bot_post` for that office and
+chat has been unpinned — pin notifications are what reach the whole chat.
+
+**Holidays** (`application/send_holiday_greeting.py`) runs every day, asks
+`HolidayCalendar.celebrations()` about today, and greets only the first day of a holiday
+(Nauryz is three days, one greeting). Transferred days off and the weekday a weekend
+holiday was moved onto are not celebrations and are filtered in the adapter. Religious and
+memorial holidays (`SOLEMN_WORDS`) get a brief that forbids irony whatever the mood. The
+model gets the English name, which it understands for any country; the written fallback
+uses the local one. No tags, no pin, and one greeting per chat even when two offices share
+it.
+
 ## The guards
 
 In `voice.py`, applied to generated text only. Each returns `None` on refusal, and every
@@ -106,8 +149,9 @@ strict.
 |---|---|
 | Length | A runaway generation |
 | Braces, `@`, `<`, `>` | Failed substitution, mentions, markup injection |
-| Any digit | An invented date, headcount or statistic |
-| Weekday / month / "завтра" stems | The duplication this whole design exists to prevent |
+| Any digit (except `allow_numbers`) | An invented date, headcount or statistic |
+| Weekday / month / "завтра" stems (except `allow_words`) | The duplication this whole design exists to prevent |
+| `http:`, `://`, `www.`, `.kz` and friends (whole messages) | A link of its own, next to ours |
 | Office name stems | *"офис «X» … в X снова весело"* |
 | Roster name stems | A colleague it was never given |
 | Banned terms | `personality.bannedTerms` |
@@ -184,6 +228,26 @@ The reply and the decision about what to remember come back together. Two calls 
 cost twice as much and could disagree with each other. Prose instead of JSON is used
 as-is and nothing is remembered — a model that ignored the contract still answered.
 
+A JSON object that does not parse is almost always a reply the token ceiling cut off.
+`_salvage` recovers the text of `"reply"` up to the cut and ends it with `…`; it used to be
+sent verbatim, braces and all.
+
+### What it will talk about, and for how long
+
+Anything. The system prompt tells the model to answer any question — code, science,
+everyday things — and not to steer back to the office. The persona keeps it in character
+and the day's mood colours the tone; the boundaries are the house rules below plus no help
+with the plainly harmful. Facts about the office still come only from the prompt.
+
+Length is the model's call, and it is told how to make it: a line or two for a simple
+question, a full answer with steps for one that needs it. The prompt used to cap every
+answer at three sentences, which is why they all read as terse. The ceiling is
+`ai.chat.maxTokens` (2000), separate from `ai.maxTokens` (400) which bounds what the
+reminders ask for, and `MAX_ANSWER_LENGTH` is 6000 characters. The router splits anything
+over Telegram's 4096 on line breaks, so an escaped entity is never cut in half, and caches
+every part so a reply to any of them finds the thread. Output is plain text: Markdown
+would arrive as literal asterisks, since everything the model writes is escaped.
+
 ### What goes into the prompt
 
 1. **Today's date and weekday.** Without it the model cannot know it is Friday, which is
@@ -239,18 +303,26 @@ Four layers, all silent. The written corpus is the floor on quality.
    answers an `ai.failed` variant.
 4. **Guards rejected it** → written text, per slot for epithets and per slot for emoji.
 
-Plus: over the daily allowance → an `ai.rateLimited` variant. The allowance is per
-person, and either the default or one person's own number can be changed from `/admin`
-without a deploy — see [configuration.md](configuration.md#ai-limits). Plus: output containing a banned
-term → an escaped ellipsis.
+Plus: over the daily allowance → an `ai.rateLimited` variant — "я с тобой больше не
+разговариваю, до завтра", in the day's mood — on every further attempt, a different line
+each time (the variant is picked with a nonce hashed from the question), and at no cost.
+The office-wide cap answers from `ai.globalLimited` instead, because the person asking
+may not have said a word all day. The allowance is per person, and either the default or
+one person's own number can be changed from `/admin` without a deploy — see
+[configuration.md](configuration.md#ai-limits). Plus: output containing a banned term → an
+escaped ellipsis.
 
 ## Cost
 
-- `gpt-4.1-nano`, `ai.maxTokens` 400, `ai.temperature` 1.0.
+- `gpt-4.1-nano`, `ai.temperature` 1.0. `ai.maxTokens` 400 for reminders and greetings,
+  `ai.chat.maxTokens` 2000 for a chat reply.
 - **One call per chat message**, capped at 10 per person per day and 200 globally
-  (`globalDailyLimit` is a stop-loss, not a quota).
-- **One call per reminder per office** — two a day. Not rate-limited; it does not need to
-  be at that volume.
+  (`globalDailyLimit` is a stop-loss, not a quota). The worst case is the cap times a
+  full 2000-token reply — at nano prices, cents a day. A reply is only that long when the
+  question needs it.
+- **One call per reminder per office**: the attendance reminder daily, Tempo on the
+  days it is due, a greeting on holidays. Not rate-limited; it does not need to be at
+  that volume.
 - The attempt is counted **whatever happened**, including failures. Otherwise a broken
   model is a free, unlimited way to spend money.
 - `ai_usage.tokens` records the API's own count and appears on the admin status screen.
@@ -287,7 +359,13 @@ Startup validators, which will refuse to boot:
 - every `attendance.empty` line carries `{when}` and `{date}`;
 - `attendance.tails` and `attendance.emojis` contain **no braces** — they are substituted
   *into* a template, so a brace would survive into the final text and read as a failed
-  substitution.
+  substitution;
+- `tempo.footer` carries `{url}`, every `tempo.lastMinutes` line carries `{minutes}`, and
+  every `holiday.greeting` line carries `{holiday}`.
+
+`tempo.weekly` names no weekday: the last working day of the week is not always a Friday.
+`tempo.lastMinutes` lines need a verb that takes the accusative (`потратьте`, `уделите`),
+because that is the case `{minutes}` is declined in.
 
 A missing mood is a startup error rather than a silent fall back to a default voice,
 which is how a missing mood stays invisible until 15:30 on a Friday.
@@ -296,7 +374,8 @@ which is how a missing mood stays invisible until 15:30 on a Friday.
 
 ```bash
 uv run pytest tests/application/test_voice.py tests/integration/test_attendance_reminder.py \
-              tests/integration/test_chat_context.py -q
+              tests/integration/test_chat_context.py tests/integration/test_tempo_and_chat.py \
+              tests/integration/test_holiday_greeting.py -q
 uv run tabelshchik validate
 ```
 

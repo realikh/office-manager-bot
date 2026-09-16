@@ -117,7 +117,7 @@ def test_jobs_are_registered_per_office(services) -> None:
     assert "prune" in labels
 
 
-def test_the_attendance_job_uses_the_configured_time_and_weekdays(services) -> None:
+def test_the_attendance_job_uses_the_default_time_and_the_configured_weekdays(services) -> None:
     from tabelshchik.adapters.scheduling.runner import JobRunner
 
     runner = JobRunner(ledger=services.jobs, timezone=services.config.app.timezone)
@@ -127,6 +127,86 @@ def test_the_attendance_job_uses_the_configured_time_and_weekdays(services) -> N
     rendered = str(job.trigger)
     assert "hour='15'" in rendered and "minute='30'" in rendered
     assert "sun" in rendered  # this is what covers Sunday -> Monday
+
+
+def test_every_office_gets_tempo_and_holiday_jobs(services) -> None:
+    from tabelshchik.bootstrap.jobs import office_jobs
+
+    names = [job.name for job in office_jobs(services, "ovest")]
+    assert names == ["attendance", "tempo", "holiday", "extend"]
+
+
+def _trigger(services, name: str) -> str:
+    from tabelshchik.bootstrap.jobs import office_jobs
+
+    return str(next(job.trigger for job in office_jobs(services, "ovest") if job.name == name))
+
+
+def test_the_jobs_use_the_times_stored_in_the_database(services) -> None:
+    """The times left app.yaml. If the jobs still read defaults, a change from /admin
+    would be stored and then ignored — configured, and doing nothing."""
+    from datetime import time
+
+    from tabelshchik.application.ports import ScheduleTime
+
+    assert "hour='17'" in _trigger(services, "tempo") and "minute='50'" in _trigger(
+        services, "tempo"
+    )
+
+    services.settings.set_schedule_time(ScheduleTime.TEMPO, time(17, 20))
+    services.settings.set_schedule_time(ScheduleTime.ATTENDANCE, time(16, 5))
+    services.settings.set_schedule_time(ScheduleTime.HOLIDAY, time(9, 45))
+    services.settings.set_schedule_time(ScheduleTime.EXTEND, time(11, 0))
+    services.settings.set_extend_weekday(0)
+
+    assert "hour='17'" in _trigger(services, "tempo") and "minute='20'" in _trigger(
+        services, "tempo"
+    )
+    assert "hour='16'" in _trigger(services, "attendance")
+    assert "minute='5'" in _trigger(services, "attendance")
+    assert "hour='9'" in _trigger(services, "holiday")
+    assert "day_of_week='mon'" in _trigger(services, "extend")
+    assert "hour='11'" in _trigger(services, "extend")
+
+
+async def test_moving_a_time_reschedules_the_running_bot(services) -> None:
+    """A stored time the scheduler never hears about is the same as no change at all."""
+    from datetime import time
+
+    from tabelshchik.adapters.scheduling.runner import JobRunner
+    from tabelshchik.application.manage_times import set_time
+    from tabelshchik.application.ports import ScheduleTime
+    from tabelshchik.bootstrap.jobs import LiveOfficeJobs
+
+    runner = JobRunner(ledger=services.jobs, timezone=services.config.app.timezone)
+    register_jobs(runner, services)
+    runner.start()
+    try:
+        live = LiveOfficeJobs(runner, services)
+        set_time(
+            which=ScheduleTime.TEMPO,
+            value=time(16, 40),
+            actor_id=1,
+            settings=services.settings,
+            jobs=live,
+        )
+        moved = dict(runner.next_runs())
+        assert moved["tempo:ovest"] is not None
+        assert (moved["tempo:ovest"].hour, moved["tempo:ovest"].minute) == (16, 40)
+        # Every job for the office is still there, and exactly once.
+        ids = [job_id for job_id, _when in runner.next_runs()]
+        assert ids.count("tempo:ovest") == 1
+        assert "holiday:pine-office-park" in ids
+        assert len([job for job in runner.jobs if job.scope == "ovest"]) == 4
+    finally:
+        runner.shutdown()
+
+
+def test_chat_replies_get_their_own_token_budget(services) -> None:
+    """A detailed answer needs far more room than a reminder's flavour clause."""
+    assert services.chat_policy.max_tokens == services.app.ai.chat.max_tokens
+    assert services.voice.max_tokens == services.app.ai.max_tokens
+    assert services.chat_policy.max_tokens > services.voice.max_tokens
 
 
 def test_without_an_openai_key_the_bot_still_has_a_voice(services) -> None:

@@ -33,15 +33,19 @@ from tabelshchik.adapters.db.repositories import (
     SqlMoodStore,
     SqlOfficeAdminStore,
     SqlOfficeStore,
+    SqlPostStore,
     SqlRosterStore,
     SqlScheduleStore,
     SqlSettingsStore,
     SqlUsageStore,
 )
 from tabelshchik.adapters.db.seed import seed_admins
+from tabelshchik.adapters.holiday_calendar import PackageHolidayCalendar
 from tabelshchik.adapters.openai.client import OpenAiChatModel
+from tabelshchik.application.manage_times import reminder_times
 from tabelshchik.application.policy import (
     ChatPolicy,
+    ReminderTimes,
     SchedulePolicy,
     SilentPolicy,
     TempoPolicy,
@@ -54,6 +58,7 @@ from tabelshchik.application.ports import (
     ChatMemoryStore,
     ChatModel,
     Clock,
+    HolidayCalendar,
     JobLedger,
     LedgerStore,
     MaintenanceStore,
@@ -63,6 +68,7 @@ from tabelshchik.application.ports import (
     OfficeAdminStore,
     OfficeJobs,
     OfficeStore,
+    PostStore,
     RosterStore,
     ScheduleStore,
     SettingsStore,
@@ -104,6 +110,8 @@ class Services:
     office_jobs: OfficeJobs | None = None
     #: Learned from Telegram at startup; needed to recognise an @mention.
     bot_username: str = ""
+    #: Asked on every run rather than tabulated at boot. See `send_holiday_greeting`.
+    holiday_calendar: HolidayCalendar = field(default_factory=PackageHolidayCalendar)
 
     # Declared as the ports, not the SQL classes: handlers depend on the protocol, and a
     # mutable attribute typed by its implementation would not satisfy one.
@@ -119,6 +127,7 @@ class Services:
     messages_cache: MessageCache = field(init=False)
     memories: ChatMemoryStore = field(init=False)
     moods: MoodStore = field(init=False)
+    posts: PostStore = field(init=False)
     jobs: JobLedger = field(init=False)
     audit: AuditLog = field(init=False)
     maintenance: MaintenanceStore = field(init=False)
@@ -136,6 +145,7 @@ class Services:
         self.messages_cache = SqlMessageCache(self.sessions)
         self.memories = SqlChatMemoryStore(self.sessions)
         self.moods = SqlMoodStore(self.sessions)
+        self.posts = SqlPostStore(self.sessions)
         self.jobs = SqlJobLedger(self.sessions)
         self.audit = SqlAuditLog(self.sessions)
         self.maintenance = SqlMaintenance(self.sessions)
@@ -175,6 +185,12 @@ class Services:
         return TempoPolicy(url=self.messages.tempo.url)
 
     @property
+    def reminder_times(self) -> ReminderTimes:
+        """When things go out. Read every time, so a change from /admin is the answer to
+        the very next question — including the scheduler's, when it is rebuilt."""
+        return reminder_times(self.settings)
+
+    @property
     def chat_policy(self) -> ChatPolicy:
         section = self.app.ai
         # The file carries the defaults; a row in `setting` overrides one. Read every
@@ -186,7 +202,7 @@ class Services:
             global_daily_limit=(
                 self.settings.ai_global_daily_limit() or section.global_daily_limit
             ),
-            max_tokens=section.max_tokens,
+            max_tokens=section.chat.max_tokens,
             temperature=section.temperature,
             triggers=frozenset(section.triggers),
             reply_depth=section.chat.reply_depth,

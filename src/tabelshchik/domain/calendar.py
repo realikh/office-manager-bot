@@ -116,6 +116,20 @@ def last_working_day_of_month(spec: CalendarSpec, day: date) -> date | None:
     return None
 
 
+def last_working_day_of_week(spec: CalendarSpec, day: date) -> date | None:
+    """The final working day of ``day``'s ISO week — when the weekly Tempo nag fires.
+
+    Not "Friday": a Friday holiday makes it Thursday, and a Saturday worked in exchange
+    for a holiday makes it that Saturday. None for a week with no working day at all.
+    """
+    monday = start_of_week(day)
+    for offset in range(6, -1, -1):
+        cursor = monday + timedelta(days=offset)
+        if spec.is_working_day(cursor):
+            return cursor
+    return None
+
+
 def roll_forward_to_working_day(spec: CalendarSpec, day: date, *, limit: int = 30) -> date | None:
     """``day`` itself if it works, else the next working day."""
     if spec.is_working_day(day):

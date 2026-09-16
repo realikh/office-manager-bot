@@ -60,6 +60,11 @@ def catalog(messages: MessagesConfig) -> Catalog:
         tomorrow=messages.common.tomorrow,
         on_weekday=messages.common.on_weekday,
         office_header=messages.common.office_header,
+        minutes=(
+            messages.common.minutes[0],
+            messages.common.minutes[1],
+            messages.common.minutes[2],
+        ),
     )
 
     variants = {
@@ -68,9 +73,11 @@ def catalog(messages: MessagesConfig) -> Catalog:
         "attendance.emojis": _spread(messages.attendance.emojis),
         "attendance.empty": _spread(messages.attendance.empty),
         "tempo.weekly": _spread(messages.tempo.weekly),
-        "tempo.monthWarning": _spread(messages.tempo.month_warning),
         "tempo.monthEnd": _spread(messages.tempo.month_end),
+        "tempo.lastMinutes": _spread(messages.tempo.last_minutes),
+        "holiday.greeting": _spread(messages.holiday.greeting),
         "ai.rateLimited": _spread(messages.ai.rate_limited),
+        "ai.globalLimited": _spread(messages.ai.global_limited),
         "ai.failed": _spread(messages.ai.failed),
     }
 
@@ -92,6 +99,7 @@ def catalog(messages: MessagesConfig) -> Catalog:
         "attendance.correction": messages.attendance.correction,
         "ai.disabled": messages.ai.disabled,
         "tempo.url": messages.tempo.url,
+        "tempo.footer": messages.tempo.footer,
         "schedule.caption": messages.schedule.caption,
         "schedule.noChanges": messages.schedule.no_changes,
         "schedule.shortfallNote": messages.schedule.shortfall_note,

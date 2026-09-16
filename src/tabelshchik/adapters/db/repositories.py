@@ -7,7 +7,7 @@ SQLite file and removes a whole class of bug where a session outlives an ``await
 from __future__ import annotations
 
 from collections.abc import Sequence
-from datetime import date, datetime
+from datetime import date, datetime, time
 
 from sqlalchemy import delete, select, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -22,7 +22,10 @@ from tabelshchik.application.ports import (
     DaySnapshot,
     MemoryFact,
     PlanningContext,
+    PostKind,
+    PostRecord,
     ScheduleDiff,
+    ScheduleTime,
 )
 from tabelshchik.domain.calendar import CalendarSpec
 from tabelshchik.domain.entities import (
@@ -762,6 +765,19 @@ class SqlMaintenance(SqlRepository):
                 session.execute(delete(models.Absence).where(models.Absence.end_date < cutoff))
             )
 
+    def delete_posts_before(self, cutoff: date) -> int:
+        with session_scope(self._sessions) as session:
+            return _rows_affected(
+                session.execute(
+                    delete(models.BotPost)
+                    .where(models.BotPost.day < cutoff)
+                    .where(
+                        # A pin still up is the one the next reminder has to take down.
+                        ~models.BotPost.pinned | models.BotPost.unpinned_at.is_not(None)
+                    )
+                )
+            )
+
     def database_bytes(self) -> int:
         with session_scope(self._sessions) as session:
             page_size = session.execute(text("PRAGMA page_size")).scalar() or 0
@@ -1322,14 +1338,16 @@ class SqlOfficeAdminStore(SqlRepository):
 
 
 class SqlSettingsStore(SqlRepository):
-    """Overrides of the numbers app.yaml carries as defaults.
+    """Overrides of the defaults: the AI limits from app.yaml, the times from
+    `ReminderTimes`.
 
-    A missing row means the file wins, so a default changed in a release reaches every
+    A missing row means the default wins, so a default changed in a release reaches every
     deployment that has not deliberately moved away from it.
     """
 
     AI_DAILY_LIMIT = "ai.daily_limit"
     AI_GLOBAL_DAILY_LIMIT = "ai.global_daily_limit"
+    EXTEND_WEEKDAY = "day.extend"
 
     def ai_daily_limit(self) -> int | None:
         return self._get(self.AI_DAILY_LIMIT)
@@ -1342,6 +1360,25 @@ class SqlSettingsStore(SqlRepository):
 
     def set_ai_global_daily_limit(self, value: int | None) -> None:
         self._set(self.AI_GLOBAL_DAILY_LIMIT, value)
+
+    def schedule_time(self, which: ScheduleTime) -> time | None:
+        # Minutes after midnight, because the table holds integers. Anything out of range
+        # was not written by this code, and the default is a better answer than a crash
+        # in every job that reads it.
+        minutes = self._get(which.value)
+        if minutes is None or not 0 <= minutes < 24 * 60:
+            return None
+        return time(minutes // 60, minutes % 60)
+
+    def set_schedule_time(self, which: ScheduleTime, value: time | None) -> None:
+        self._set(which.value, None if value is None else value.hour * 60 + value.minute)
+
+    def extend_weekday(self) -> int | None:
+        value = self._get(self.EXTEND_WEEKDAY)
+        return value if value is not None and 0 <= value <= 6 else None
+
+    def set_extend_weekday(self, value: int | None) -> None:
+        self._set(self.EXTEND_WEEKDAY, value)
 
     def _get(self, key: str) -> int | None:
         with session_scope(self._sessions) as session:
@@ -1361,3 +1398,75 @@ class SqlSettingsStore(SqlRepository):
                 session.add(models.Setting(key=key, value=value))
                 return
             row.value = value
+
+
+# ----------------------------------------------------------------------------- posts
+
+
+class SqlPostStore(SqlRepository):
+    def sent(self, office_id: str, kind: PostKind, day: date) -> bool:
+        with session_scope(self._sessions) as session:
+            return session.get(models.BotPost, (office_id, kind, day)) is not None
+
+    def sent_to_chat(self, chat_id: int, kind: PostKind, day: date) -> bool:
+        with session_scope(self._sessions) as session:
+            found = session.scalars(
+                select(models.BotPost.office_id)
+                .where(models.BotPost.chat_id == chat_id)
+                .where(models.BotPost.kind == kind)
+                .where(models.BotPost.day == day)
+                .limit(1)
+            ).first()
+            return found is not None
+
+    def pinned(self, office_id: str, kind: PostKind, chat_id: int) -> Sequence[PostRecord]:
+        with session_scope(self._sessions) as session:
+            rows = session.scalars(
+                select(models.BotPost)
+                .where(models.BotPost.office_id == office_id)
+                .where(models.BotPost.kind == kind)
+                .where(models.BotPost.chat_id == chat_id)
+                .where(models.BotPost.pinned)
+                .where(models.BotPost.unpinned_at.is_(None))
+                .order_by(models.BotPost.day)
+            ).all()
+            return [_to_post(row) for row in rows]
+
+    def record(self, post: PostRecord, *, at: datetime) -> None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.BotPost, (post.office_id, post.kind, post.day))
+            if row is None:
+                session.add(
+                    models.BotPost(
+                        office_id=post.office_id,
+                        kind=post.kind,
+                        day=post.day,
+                        chat_id=post.chat_id,
+                        message_id=post.message_id,
+                        pinned=post.pinned,
+                        sent_at=at,
+                    )
+                )
+                return
+            row.chat_id = post.chat_id
+            row.message_id = post.message_id
+            row.pinned = post.pinned
+            row.sent_at = at
+            row.unpinned_at = None
+
+    def mark_unpinned(self, office_id: str, kind: PostKind, day: date, *, at: datetime) -> None:
+        with session_scope(self._sessions) as session:
+            row = session.get(models.BotPost, (office_id, kind, day))
+            if row is not None:
+                row.unpinned_at = at
+
+
+def _to_post(row: models.BotPost) -> PostRecord:
+    return PostRecord(
+        office_id=row.office_id,
+        kind=row.kind,
+        day=row.day,
+        chat_id=row.chat_id,
+        message_id=row.message_id,
+        pinned=row.pinned,
+    )

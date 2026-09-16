@@ -16,6 +16,7 @@ from typing import Protocol
 
 from tabelshchik.application.policy import (
     ChatPolicy,
+    ReminderTimes,
     SchedulePolicy,
     SilentPolicy,
     TempoPolicy,
@@ -26,6 +27,7 @@ from tabelshchik.application.ports import (
     AuditLog,
     ChatMemoryStore,
     Clock,
+    HolidayCalendar,
     JobLedger,
     LedgerStore,
     MaintenanceStore,
@@ -52,6 +54,7 @@ class BotContext(Protocol):
     bot_username: str
     #: So the admin "check config" screen can re-validate the files on disk.
     config_dir: Path
+    holiday_calendar: HolidayCalendar
 
     offices: OfficeStore
     admins: AdminStore
@@ -85,6 +88,9 @@ class BotContext(Protocol):
 
     @property
     def chat_policy(self) -> ChatPolicy: ...
+
+    @property
+    def reminder_times(self) -> ReminderTimes: ...
 
     @property
     def admin_ids(self) -> frozenset[int]: ...

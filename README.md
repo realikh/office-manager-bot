@@ -13,9 +13,14 @@ rather than a repair.
 - **Fair schedules.** Each office has a weekly template: people fixed to certain
   weekdays, plus `vacantDesks` extra seats to fill. The extras are drafted to make office
   attendance as equal as possible — provably, not heuristically (see below).
-- **Attendance reminders** at a configured time, announcing the next working day and
-  tagging everyone on it. Mon→Tue, Fri→Mon and Sun→Mon all fall out of one rule.
-- **Tempo reminders** weekly and at month end.
+- **Attendance reminders** at a time set from the bot, announcing the next working day
+  and tagging everyone on it. Mon→Tue, Fri→Mon and Sun→Mon all fall out of one rule.
+- **Tempo reminders** on the last working day of the week and of the month — one message
+  when they coincide, written by the model in the day's mood, with the link, everyone
+  tagged, and the new message pinned in place of the last one. Sent in the last half hour
+  of the workday, it says how many minutes are left to spend on it.
+- **Holiday greetings** on public holidays, from a calendar that is checked every day and
+  kept current by a weekly workflow.
 - **A colour-coded XLSX** published whenever a schedule changes, with a statistics sheet
   that puts the fairness spread front and centre.
 - **Admin mode** inside Telegram: hire and fire, rename, link Telegram handles, weekly
@@ -23,9 +28,10 @@ rather than a repair.
   after first boot, so this is the only way to change a roster — the YAML seeds are a
   starting point, not a live source.
 - **Employee self-service**: everyone manages their own vacations.
-- **Chat.** Mention the bot and it answers, grounded in the real schedule and today's
-  actual date, following a reply chain back up to ten levels, rate-limited per person per
-  day.
+- **Chat.** Mention the bot and it answers — about the schedule from the real data,
+  about anything else from what it knows — at whatever length the question needs,
+  following a reply chain back up to ten levels, rate-limited per person per day (and
+  rude about it once you are out).
 - **Moods.** Mostly toxic, occasionally fun, happy, sad or depressive — one per office
   per day.
 

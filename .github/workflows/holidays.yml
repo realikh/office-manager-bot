@@ -1,0 +1,81 @@
+name: holidays
+
+# Public holidays come from the `holidays` package, pinned in uv.lock. The pin is what
+# makes a build reproducible, and also what makes the calendar go stale: a decree that
+# moves a holiday reaches the bot only when the package does. So once a week this bumps
+# that one package, runs the same checks CI runs, and ships it if they pass.
+on:
+  schedule:
+    - cron: "17 2 * * 1" # Mondays, 02:17 UTC — 07:17 in Almaty, before anything is sent
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  # To start the deploy: a push made with GITHUB_TOKEN does not trigger other workflows,
+  # but a dispatch does.
+  actions: write
+
+concurrency:
+  group: holidays
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Upgrade the holiday calendar
+        id: bump
+        run: |
+          set -euo pipefail
+          before="$(uv tree --package holidays --depth 0 2>/dev/null | head -1 || true)"
+          uv lock --upgrade-package holidays
+          if git diff --quiet uv.lock; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "holidays is already current: $before"
+            exit 0
+          fi
+          after="$(uv tree --package holidays --depth 0 2>/dev/null | head -1 || true)"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "summary=$before -> $after" >> "$GITHUB_OUTPUT"
+
+      # The same gate as ci.yml. A new calendar that breaks a test does not ship.
+      - if: steps.bump.outputs.changed == 'true'
+        run: uv sync
+      - if: steps.bump.outputs.changed == 'true'
+        run: uv run ruff check . && uv run ruff format --check .
+      - if: steps.bump.outputs.changed == 'true'
+        run: uv run mypy
+      - if: steps.bump.outputs.changed == 'true'
+        run: uv run lint-imports
+      - if: steps.bump.outputs.changed == 'true'
+        run: uv run tabelshchik validate
+      - if: steps.bump.outputs.changed == 'true'
+        env:
+          TABELSHCHIK_DB: ${{ runner.temp }}/migration-check.db
+        run: |
+          uv run alembic upgrade head
+          uv run alembic check
+      - if: steps.bump.outputs.changed == 'true'
+        run: uv run pytest -q
+
+      - name: Commit and deploy
+        if: steps.bump.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SUMMARY: ${{ steps.bump.outputs.summary }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add uv.lock
+          git commit -m "Pick up the latest holiday calendar" -m "$SUMMARY"
+          git push origin HEAD:main
+          # ci.yml runs its checks again on the pushed commit, then deploys.
+          gh workflow run ci.yml --ref main

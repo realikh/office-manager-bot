@@ -1,6 +1,6 @@
 # Testing
 
-460-odd tests, about 40 seconds. They are the reason the fairness claims are claims and
+About 800 tests, under a minute. They are the reason the fairness claims are claims and
 not hopes, so it is worth knowing what each group is actually for.
 
 ```bash
@@ -56,10 +56,25 @@ is the guarantee that decoration is optional and being reminded is not.
 
 **`tests/integration/test_wiring.py`** — that the composition root actually composes.
 Cheap, and it catches a store added to the container but not to `BotContext`.
+`test_the_jobs_use_the_times_stored_in_the_database` and
+`test_moving_a_time_reschedules_the_running_bot` are what stop a time set from `/admin`
+being stored and then ignored.
+
+**`tests/integration/test_tempo_and_chat.py`** —
+`test_the_old_pin_comes_down_first_even_after_a_restart` is the regression for a pin
+tracked in memory, which a redeploy forgot; `test_a_reminder_goes_out_once_a_day_whatever_the_scheduler_does`
+covers a time moved after the job fired;
+`test_an_answer_cut_off_by_the_token_ceiling_is_recovered_not_sent_as_json` covers a chat
+reply that ran out of tokens mid-JSON.
+
+**`tests/integration/test_holiday_greeting.py`** — one greeting per holiday, per chat, per
+day, and none on a transferred day off. The last few tests read the real `holidays`
+package, so a calendar upgrade that changes past data shows up here first.
 
 ## Tests that pin exact wording
 
-`test_attendance_reminder.py` and `test_tempo_and_chat.py` load the **real**
+`test_attendance_reminder.py`, `test_tempo_and_chat.py` and `test_holiday_greeting.py`
+load the **real**
 `config/messages.yaml` and `config/app.yaml`, so a schema violation fails at collection
 time, and several assertions check rendered strings.
 

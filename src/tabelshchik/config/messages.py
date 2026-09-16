@@ -120,16 +120,46 @@ class AttendanceMessages(Base):
 
 
 class TempoMessages(Base):
+    """The Tempo reminder's hand-written floor, under the model's words."""
+
     url: str = ""
+    #: Markup, with the link in `{url}`. Ours, so it is not escaped.
+    footer: str
+    #: The last working day of the week.
     weekly: MoodVariants
-    month_warning: MoodVariants
+    #: The last working day of the month, which wins when both apply.
     month_end: MoodVariants
+    #: Appended when the reminder lands in the last half hour of the day. `{minutes}` is
+    #: "10 минут", already declined.
+    last_minutes: MoodVariants
+
+    @model_validator(mode="after")
+    def tokens_are_where_the_code_expects_them(self) -> TempoMessages:
+        if "{url}" not in self.footer:
+            raise ValueError("tempo.footer must contain {url}")
+        self.last_minutes.require_tokens("{minutes}")
+        return self
+
+
+class HolidayMessages(Base):
+    #: When the model cannot write the greeting. `{holiday}` is the holiday's own name,
+    #: in quotes, as the country writes it.
+    greeting: MoodVariants
+
+    @model_validator(mode="after")
+    def greeting_names_the_holiday(self) -> HolidayMessages:
+        self.greeting.require_tokens("{holiday}")
+        return self
 
 
 class AiMessages(Base):
     #: Appended to the system prompt to set the voice.
     persona: MoodText
+    #: This person has used up their own allowance.
     rate_limited: MoodVariants
+    #: Everybody's allowance together has run out — the cost stop-loss. Not "I'm not
+    #: talking to *you*", because this person may not have asked anything all day.
+    global_limited: MoodVariants
     failed: MoodVariants
     disabled: str
 
@@ -148,11 +178,14 @@ class CommonMessages(Base):
     tomorrow: str
     on_weekday: str
     office_header: str = "🏢 <b>{office}</b>"
+    #: The accusative forms for 1, 2–4 and 5–20: "минуту", "минуты", "минут".
+    minutes: list[str] = Field(min_length=3, max_length=3)
 
 
 class MessagesConfig(Base):
     common: CommonMessages
     attendance: AttendanceMessages
     tempo: TempoMessages
+    holiday: HolidayMessages
     ai: AiMessages
     schedule: ScheduleMessages

@@ -13,7 +13,7 @@ free to run: one small VM, SQLite, long polling, no managed services.
 ## Commands
 
 ```bash
-uv run pytest                    # everything (~40s, 460+ tests)
+uv run pytest                    # everything (~50s, 800 tests)
 uv run pytest -m "not slow"      # skip the multi-year fairness simulations
 uv run pytest tests/domain -q    # one area
 uv run mypy                      # strict, on src *and* tests
@@ -70,8 +70,8 @@ nothing to register.
 | Path | What belongs there |
 |---|---|
 | `domain/` | Entities, the min-cost-flow solver, the fairness ledger, the calendar, `stable_hash`. Pure. |
-| `application/` | Use cases (`send_attendance_reminder`, `regenerate_schedule`, `manage_absences`, `manage_roster`, `manage_offices`, `manage_admins`, `chat`, `memory`, `prune_history`), the `ports.py` Protocols, `ids.py`, `voice.py`. |
-| `adapters/` | SQLAlchemy repositories, the Telegram routers, the OpenAI client, APScheduler, XLSX, fakes. |
+| `application/` | Use cases (`send_attendance_reminder`, `send_tempo_reminder`, `send_holiday_greeting`, `regenerate_schedule`, `manage_absences`, `manage_roster`, `manage_offices`, `manage_admins`, `manage_limits`, `manage_times`, `chat`, `memory`, `prune_history`), the `ports.py` Protocols, `ids.py`, `voice.py`. |
+| `adapters/` | SQLAlchemy repositories, the Telegram routers, the OpenAI client, APScheduler, XLSX, the `holidays` calendar, fakes. |
 | `config/` | Pydantic models for `app.yaml` and `messages.yaml`; `OfficeSeed` for the import command. |
 | `bootstrap/` | The composition root, job registration, lifespan, `mapping.py`. |
 
@@ -267,6 +267,23 @@ The default cascades away every assignment a person ever had and silently rewrit
 everyone else's fairness numbers. `application/manage_roster.end_tenure` always passes an
 explicit date. Never call the store method directly from a handler.
 
+### Delivery times are database rows too, and moving one must reschedule
+
+The times of day (attendance, Tempo, holiday greeting, extender, end of workday) live in
+the `setting` table, read uncached through `Services.reminder_times`, with defaults in
+`ReminderTimes`. `office_jobs` reads them every time it builds a job list, and saving one
+calls `OfficeJobs.reschedule()` — skip that and the change is stored and ignored until the
+next deploy. A time moved after its job fired gives the day a second occurrence key, so
+anything that posts must be idempotent per day on its own: the attendance fingerprint,
+or a `bot_post` row for Tempo and holidays. `app.yaml` refuses the old `time` keys.
+
+### Pins are tracked in `bot_post`, never in memory
+
+The Tempo reminder unpins every earlier Tempo post recorded as pinned for that office and
+chat, *then* pins the new one. The dict on `TelegramNotifier` used to hold this and was
+empty after every redeploy, so old pins stayed up. `delete_posts_before` keeps any row
+still pinned — it is what next week's reminder needs to find.
+
 ### Offices and admins are database rows, not files
 
 Nothing reads `config/offices/*.yaml` at boot; the directory is git-ignored and only
@@ -294,8 +311,8 @@ to work on that person's next message, not at the next deploy.
 ### Closing an office has to stop the things that speak
 
 Per-office jobs are registered at boot and outlive the office, so `send_attendance_reminder`,
-`send_tempo_reminder` and the horizon extender each check `office.active` themselves,
-**before `planning_context`** — which raises `LookupError` once the office is gone, and the
+`send_tempo_reminder`, `send_holiday_greeting` and the horizon extender each check
+`office.active` themselves, **before `planning_context`** — which raises `LookupError` once the office is gone, and the
 runner turns that into a Telegram failure alert every Thursday forever. `JobRunner.add_live`
 and `drop` keep a running scheduler in step; `add` alone only appends to the list `start`
 read once.

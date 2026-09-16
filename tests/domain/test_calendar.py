@@ -4,6 +4,7 @@ from tabelshchik.domain.calendar import (
     CalendarSpec,
     DayKind,
     last_working_day_of_month,
+    last_working_day_of_week,
     next_working_day,
     roll_forward_to_working_day,
     start_of_week,
@@ -81,3 +82,32 @@ def test_roll_forward_keeps_a_working_day_where_it_is() -> None:
     spec = CalendarSpec()
     assert roll_forward_to_working_day(spec, MON) == MON
     assert roll_forward_to_working_day(spec, SAT) == date(2026, 9, 21)
+
+
+# ------------------------------------------------------------ the end of the working week
+
+
+def test_the_week_normally_ends_on_friday() -> None:
+    for day in (MON, FRI, SAT, SUN):
+        assert last_working_day_of_week(CalendarSpec(), day) == FRI
+
+
+def test_a_friday_holiday_ends_the_week_on_thursday() -> None:
+    spec = CalendarSpec(holidays=frozenset({FRI}))
+    assert last_working_day_of_week(spec, MON) == FRI - timedelta(days=1)
+
+
+def test_a_closed_friday_counts_the_same_as_a_holiday() -> None:
+    spec = CalendarSpec(closed=frozenset({FRI}))
+    assert last_working_day_of_week(spec, FRI) == FRI - timedelta(days=1)
+
+
+def test_a_working_saturday_ends_the_week() -> None:
+    """Kazakhstan moves holidays onto Saturdays, which then are working days."""
+    spec = CalendarSpec(extra_workdays=frozenset({SAT}))
+    assert last_working_day_of_week(spec, FRI) == SAT
+
+
+def test_a_week_with_no_working_day_has_no_end() -> None:
+    spec = CalendarSpec(holidays=frozenset(MON + timedelta(days=offset) for offset in range(5)))
+    assert last_working_day_of_week(spec, MON) is None

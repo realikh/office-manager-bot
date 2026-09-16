@@ -10,6 +10,7 @@ import pytest
 from tabelshchik.application.ports import Completion
 from tabelshchik.application.voice import (
     SAFE_EMOJI,
+    Announcement,
     Catalog,
     CommonText,
     MoodPolicy,
@@ -17,6 +18,8 @@ from tabelshchik.application.voice import (
     format_date,
     format_long_date,
     lead_in,
+    plural_minutes,
+    render_announcement,
     render_days,
     render_emoji,
     render_epithet,
@@ -493,3 +496,105 @@ def test_the_allowlist_holds_single_codepoints_only() -> None:
     """Membership is an exact string match, so a multi-codepoint entry would be
     unreachable — present in the list and never matching anything."""
     assert all(len(icon) == 1 for icon in SAFE_EMOJI)
+
+
+# ------------------------------------------------------------------ whole messages
+
+
+@pytest.mark.parametrize(
+    ("count", "expected"),
+    [
+        (1, "1 минуту"),
+        (2, "2 минуты"),
+        (4, "4 минуты"),
+        (5, "5 минут"),
+        (10, "10 минут"),
+        (11, "11 минут"),
+        (14, "14 минут"),
+        (21, "21 минуту"),
+        (22, "22 минуты"),
+        (25, "25 минут"),
+        (30, "30 минут"),
+    ],
+)
+def test_minutes_are_declined_for_the_number(count: int, expected: str) -> None:
+    assert plural_minutes(count, COMMON) == expected
+
+
+def test_the_minutes_token_is_filled_and_escaped() -> None:
+    assert render_template("Потратьте {minutes}.", minutes="10 минут") == "Потратьте 10 минут."
+    assert render_template("С праздником — {holiday}!", holiday="«<b>»") == (
+        "С праздником — «&lt;b&gt;»!"
+    )
+
+
+def announcement(raw: str, **kwargs) -> str | None:
+    return render_announcement(raw, office_name="O'Vest", common=COMMON, **kwargs)
+
+
+def test_a_whole_message_is_accepted_and_escaped() -> None:
+    assert announcement("Неделя позади & Tempo ждёт") == "Неделя позади &amp; Tempo ждёт."
+
+
+def test_todays_weekday_may_be_named_when_allowed() -> None:
+    line = "С пятницей! Заполните Tempo."
+    assert announcement(line) is None
+    assert announcement(line, allow_words=["пятница"]) == line
+
+
+def test_allowing_one_weekday_does_not_allow_the_others() -> None:
+    assert announcement("До понедельника! Tempo.", allow_words=["пятница"]) is None
+
+
+def test_only_the_numbers_given_are_allowed() -> None:
+    assert announcement("Потратьте 10 минут на Tempo.", allow_numbers=[10]) is not None
+    assert announcement("Потратьте 15 минут на Tempo.", allow_numbers=[10]) is None
+    assert announcement("Потратьте 100 минут на Tempo.", allow_numbers=[10]) is None
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "Заполните на https://tempo.example",
+        "Зайдите на tempo.kz и заполните",
+        "Откройте www.tempo и заполните",
+    ],
+)
+def test_a_message_with_its_own_link_is_refused(line: str) -> None:
+    assert announcement(line) is None
+
+
+def test_a_message_longer_than_a_chat_message_should_be_is_refused() -> None:
+    assert announcement("Очень длинно. " * 60) is None
+
+
+async def test_announce_uses_the_model_when_it_behaves() -> None:
+    model = StubModel(json.dumps({"text": "Неделя позади, Tempo ждёт"}, ensure_ascii=False))
+
+    result = await voice(model).announce(
+        Mood.TOXIC, brief="задание", fallback="запасной", office_name="O'Vest"
+    )
+
+    assert result.generated
+    assert result.text == "Неделя позади, Tempo ждёт."
+    system, user = model.calls[0]
+    assert "Ты — Табельщик." in system
+    assert user == "задание"
+
+
+@pytest.mark.parametrize(
+    "reply_text",
+    [None, "не json", json.dumps({"other": "x"}), json.dumps({"text": "Снова понедельник"})],
+)
+async def test_announce_falls_back_when_the_model_does_not(reply_text) -> None:
+    result = await voice(StubModel(reply_text)).announce(
+        Mood.TOXIC, brief="задание", fallback="запасной", office_name="O'Vest"
+    )
+    assert result == Announcement("запасной")
+
+
+async def test_announce_without_a_model_is_the_fallback() -> None:
+    result = await voice(None).announce(
+        Mood.TOXIC, brief="задание", fallback="запасной", office_name="O'Vest"
+    )
+    assert result == Announcement("запасной")

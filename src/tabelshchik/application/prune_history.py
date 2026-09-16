@@ -51,6 +51,7 @@ class PruneReport:
     absences_removed: int = 0
     chat_messages_removed: int = 0
     chat_memory_removed: int = 0
+    posts_removed: int = 0
     bytes_before: int = 0
     bytes_after: int = 0
 
@@ -64,6 +65,7 @@ class PruneReport:
             or self.absences_removed
             or self.chat_messages_removed
             or self.chat_memory_removed
+            or self.posts_removed
         )
 
 
@@ -118,6 +120,8 @@ def prune_history(
         chat_memory_removed=maintenance.delete_chat_memory_before(
             _cutoff(now, policy.chat_memory_days)
         ),
+        # The job ledger's window: both are records of what the scheduler did.
+        posts_removed=maintenance.delete_posts_before(today - timedelta(days=policy.job_runs_days)),
         bytes_before=bytes_before,
     )
 

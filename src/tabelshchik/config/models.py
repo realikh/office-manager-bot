@@ -101,7 +101,13 @@ class SilentHours(Base):
 
 
 class AttendanceReminder(Base):
-    time: clock_time
+    """Which days, and whether to pin. *When* is not here any more.
+
+    The time of day moved into the database, edited from /admin, because moving a
+    reminder by ten minutes should not take a deploy. A `time:` key left in the file is a
+    startup error rather than a setting that is quietly ignored.
+    """
+
     #: Which weekdays the job runs. Including `sun` is what covers Sunday -> Monday;
     #: Friday -> Monday needs nothing special, it is just the next working day.
     run_on: list[WeekdayName] = Field(default_factory=lambda: list(_DEFAULT_RUN_ON))
@@ -113,23 +119,13 @@ class AttendanceReminder(Base):
 
 
 class RemindersSection(Base):
-    attendance: AttendanceReminder
-
-
-class AutoExtend(Base):
-    weekday: WeekdayName = "thu"
-    time: clock_time = clock_time(10, 0)
-
-    @property
-    def weekday_number(self) -> int:
-        return weekday_number(self.weekday)
+    attendance: AttendanceReminder = AttendanceReminder()
 
 
 class ScheduleSection(Base):
     horizon_weeks: int = Field(default=6, ge=1, le=52)
     freeze_weeks: int = Field(default=1, ge=0, le=8)
     max_days_per_week: int = Field(default=5, ge=1, le=7)
-    auto_extend: AutoExtend = AutoExtend()
     holiday_calendar: str = "KZ"
     absence_policy: AbsencePolicy = AbsencePolicy.NO_DEBT
     surplus_clamp: int = Field(default=10, ge=1, le=365)
@@ -210,6 +206,10 @@ class ChatContextSection(Base):
     general_facts: int = Field(default=20, ge=0, le=100)
     personal_facts: int = Field(default=10, ge=0, le=50)
     fact_chars: int = Field(default=120, ge=20, le=500)
+    #: Ceiling on one chat reply. Separate from `ai.maxTokens`, which bounds the short
+    #: things the reminders ask for: an answer that explains something needs far more
+    #: room than a flavour clause, and a reply cut off mid-JSON is lost entirely.
+    max_tokens: int = Field(default=2000, ge=100, le=8000)
 
 
 class AiSection(Base):
@@ -246,7 +246,7 @@ class HealthSection(Base):
 
 class AppConfig(Base):
     timezone: str = "Asia/Almaty"
-    reminders: RemindersSection
+    reminders: RemindersSection = RemindersSection()
     silent_hours: SilentHours = SilentHours()
     schedule: ScheduleSection = ScheduleSection()
     retention: RetentionSection = RetentionSection()

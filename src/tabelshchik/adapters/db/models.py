@@ -29,7 +29,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # The only import here that is not a domain entity. Adminship is a Telegram-permissions
 # concept, not a scheduling one, so it lives with the ports rather than in the domain.
-from tabelshchik.application.ports import AdminRole
+from tabelshchik.application.ports import AdminRole, PostKind
 from tabelshchik.domain.entities import (
     AbsenceKind,
     AssignmentSource,
@@ -353,6 +353,31 @@ class Setting(Base):
 
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
     value: Mapped[int] = mapped_column(Integer)
+
+
+class BotPost(Base):
+    """A scheduled message the bot may have to find again.
+
+    Kept for the pin: the previous Tempo reminder has to be unpinned before the next one
+    is pinned, and a dict in memory forgot it on every restart. It doubles as a
+    once-a-day guard, because moving a reminder's time after it fired gives the day a
+    second occurrence the job ledger has never seen.
+    """
+
+    __tablename__ = "bot_post"
+
+    office_id: Mapped[str] = mapped_column(
+        ForeignKey("office.id", ondelete="CASCADE"), primary_key=True
+    )
+    kind: Mapped[PostKind] = mapped_column(_enum(PostKind), primary_key=True)
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    chat_id: Mapped[int] = mapped_column(Integer)
+    message_id: Mapped[int] = mapped_column(Integer)
+    pinned: Mapped[bool] = mapped_column(Boolean, default=False)
+    sent_at: Mapped[datetime] = mapped_column(DateTime)
+    unpinned_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+    __table_args__ = (Index("ix_bot_post_chat", "chat_id", "kind", "day"),)
 
 
 class BotMood(Base):

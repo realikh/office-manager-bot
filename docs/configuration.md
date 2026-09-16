@@ -4,15 +4,16 @@ Two files in git, one line about what belongs in them, and a recipe for adding a
 without leaving half of it unwired.
 
 **The line: deployment configuration lives in git; the organisation lives in the
-database.** Offices, employees, weekly templates, calendar exceptions and who is an admin
-are all edited from the bot, by the people who run it. Timezones, reminder times and the
-bot's voice are deploy-time decisions and stay in the repository.
+database.** Offices, employees, weekly templates, calendar exceptions, who is an admin and
+*when* each message goes out are all edited from the bot, by the people who run it.
+Timezones, silent hours and the bot's voice are deploy-time decisions and stay in the
+repository.
 
 ## The files
 
 | File | Holds | Authority |
 |---|---|---|
-| `config/app.yaml` | Operational settings: timezone, reminder times, silent hours, schedule policy, retention, moods, AI, health | **Always live.** Read at boot; there is no copy in the database. |
+| `config/app.yaml` | Operational settings: timezone, which days the attendance reminder runs, silent hours, schedule policy, retention, moods, AI, health | **Always live.** Read at boot; there is no copy in the database. |
 | `config/messages.yaml` | Every user-facing string, per mood | **Always live.** See [ai-voice.md](ai-voice.md). |
 
 Secrets are never in either: `TELEGRAM_BOT_TOKEN`, `OPENAI_API_KEY`, `ADMIN_IDS`,
@@ -40,6 +41,48 @@ away every employee, assignment and ledger entry it ever had.
 
 `config/offices/` is git-ignored. If you keep local copies, they are a snapshot rather
 than a record — the database is the record, and the nightly backup is what protects it.
+
+## Delivery times
+
+`/admin` → ⏰ Время рассылок. These were `app.yaml` keys (`reminders.attendance.time`,
+`schedule.autoExtend`), which made moving a reminder by ten minutes a commit and a deploy.
+A leftover key is now a startup error, not a setting that is quietly ignored.
+
+| Time | Default | What it does |
+|---|---|---|
+| 📣 Кто завтра в офисе | 15:30 | The attendance reminder. Its *days* are still `reminders.attendance.runOn`. |
+| 📝 Tempo | 17:50 | Runs daily; sends only on the last working day of the week and/or month — one message when both. |
+| 🏁 Конец рабочего дня | 18:00 | Schedules nothing. If Tempo goes out 1–30 minutes before it, the message tells people to spend exactly those minutes on Tempo; any earlier, no countdown. |
+| 🎉 Праздники | 10:00 | Runs daily; greets the office on a public holiday. |
+| 🔄 Продление | чт 10:00 | Rolls the horizon forward and publishes the workbook. Typed as `чт 10:00`, or `10:00` to keep the day. |
+
+They are rows in the `setting` table, stored as minutes after midnight. A missing row
+means the default in `application/policy.py:ReminderTimes`, so a default changed in a
+release still reaches every deployment that has not moved away from it; `-` in the prompt
+deletes the row. Reads are uncached (`Services.reminder_times`).
+
+Saving a time calls `OfficeJobs.reschedule()`, which rebuilds every active office's
+triggers on the running scheduler. Moving a time on a day it has already fired does not
+send twice: the attendance reminder checks its announced fingerprint, the extender's
+regeneration is a no-op when nothing changed, and Tempo and holiday posts are recorded in
+`bot_post` and skipped if today's is already there. A time moved to earlier than *now*
+takes effect from the next occurrence.
+
+## Holidays
+
+Public holidays come from the [`holidays`](https://pypi.org/project/holidays/) package,
+per office (`/admin` → office → ⚙️ → 📅). It tracks the law — it already knows Kazakhstan's
+Constitution Day moves to 15 March from 2027 — where the free web API that was checked
+still listed the old date and missed Orthodox Christmas and Kurban Ait.
+
+Its data changes only when the package does, so `.github/workflows/holidays.yml` upgrades
+that one package every Monday, runs every check CI runs, and if they pass commits
+`uv.lock` to `main` and starts the deploy. Nothing needs doing by hand; the ⏰ screen shows
+the package version and the next holiday so a stale calendar is visible. If `main` is ever
+branch-protected, that workflow has to open a pull request instead.
+
+The greeting job asks the calendar about *today* every time it runs, rather than working
+out a list at boot.
 
 ## AI limits
 
@@ -155,12 +198,12 @@ validators will refuse to boot otherwise.
 | Section | Notes |
 |---|---|
 | `timezone` | Everything civil. Also passed explicitly to every cron trigger — see CLAUDE.md. |
-| `reminders.attendance` | `time`, `runOn`, `pin`. Listing `sun` is what covers Sun→Monday; Mon→Tue and Fri→Mon fall out of the one rule. |
+| `reminders.attendance` | `runOn`, `pin`. Listing `sun` is what covers Sun→Monday; Mon→Tue and Fri→Mon fall out of the one rule. The time is set from `/admin`. |
 | `silentHours` | Per weekday with a `default`. Silent still *sends* — it just does not buzz. A window may cross midnight. |
-| `schedule` | `horizonWeeks` generated, `freezeWeeks` immutable (must be smaller, validated), `maxDaysPerWeek`, `absencePolicy`, `surplusClamp`. |
+| `schedule` | `horizonWeeks` generated, `freezeWeeks` immutable (must be smaller, validated), `maxDaysPerWeek`, `absencePolicy`, `surplusClamp`. When the extender runs is set from `/admin`. |
 | `retention` | `scheduleMonths` 3, `jobRunsDays`, `auditDays`, `aiUsageDays`, `chatMessagesDays`. |
 | `personality` | `moods` weights, `safeMode`, `bannedTerms`. |
-| `ai` | Model, sampling, daily limits, triggers, and `chat` context budgets. The two limits are **defaults** — see below. |
+| `ai` | Model, sampling, daily limits, triggers, and `chat` context budgets. `maxTokens` bounds what reminders and greetings ask for; `chat.maxTokens` bounds one chat reply. The two limits are **defaults** — see above. |
 | `health` | `pingUrl` dead-man's switch, heartbeat file and staleness, `catchUpGraceHours`, `nightlyBackup`. |
 
 ### `offices/<id>.yaml`

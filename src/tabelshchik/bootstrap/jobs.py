@@ -17,6 +17,7 @@ from tabelshchik.application.build_report import ReportDay, build_report
 from tabelshchik.application.prune_history import prune_history
 from tabelshchik.application.regenerate_schedule import Regeneration, regenerate
 from tabelshchik.application.send_attendance_reminder import send_attendance_reminder
+from tabelshchik.application.send_holiday_greeting import send_holiday_greeting
 from tabelshchik.application.send_tempo_reminder import send_tempo_reminder
 from tabelshchik.bootstrap.container import Services
 
@@ -24,40 +25,50 @@ logger = logging.getLogger(__name__)
 
 
 def office_jobs(services: Services, office_id: str) -> list[Job]:
-    """The three jobs one office needs.
+    """The four jobs one office needs.
 
-    Its own function so boot and "an office was just created" build the same list. Every
-    trigger takes `app.timezone` explicitly: without it CronTrigger inherits the host's
-    zone, and while scheduled firing survives that, the catch-up sweep evaluates the
-    trigger directly and silently replays nothing.
+    Its own function so boot, "an office was just created" and "an admin moved a time"
+    all build the same list. The times are read from the database here, every time.
+
+    Every trigger takes `app.timezone` explicitly: without it CronTrigger inherits the
+    host's zone, and while scheduled firing survives that, the catch-up sweep evaluates
+    the trigger directly and silently replays nothing.
     """
     app = services.app
-    attendance = app.reminders.attendance
+    times = services.reminder_times
     return [
         Job(
             name="attendance",
             scope=office_id,
             trigger=daily_at(
-                attendance.time.hour,
-                attendance.time.minute,
-                weekdays=attendance.weekdays,
+                times.attendance.hour,
+                times.attendance.minute,
+                weekdays=app.reminders.attendance.weekdays,
                 timezone=app.timezone,
             ),
             handler=_attendance_handler(services, office_id),
         ),
         Job(
+            # Daily: whether today closes the week or the month is the handler's question,
+            # asked of a calendar that knows about holidays.
             name="tempo",
             scope=office_id,
-            trigger=daily_at(9, 0, timezone=app.timezone),
+            trigger=daily_at(times.tempo.hour, times.tempo.minute, timezone=app.timezone),
             handler=_tempo_handler(services, office_id),
+        ),
+        Job(
+            name="holiday",
+            scope=office_id,
+            trigger=daily_at(times.holiday.hour, times.holiday.minute, timezone=app.timezone),
+            handler=_holiday_handler(services, office_id),
         ),
         Job(
             name="extend",
             scope=office_id,
             trigger=daily_at(
-                app.schedule.auto_extend.time.hour,
-                app.schedule.auto_extend.time.minute,
-                weekdays=frozenset({app.schedule.auto_extend.weekday_number}),
+                times.extend.hour,
+                times.extend.minute,
+                weekdays=frozenset({times.extend_weekday}),
                 timezone=app.timezone,
             ),
             handler=_extend_handler(services, office_id),
@@ -83,6 +94,11 @@ class LiveOfficeJobs:
 
     def drop_office(self, office_id: str) -> None:
         self._runner.drop(scope=office_id)
+
+    def reschedule(self) -> None:
+        for office in self._services.offices.active_offices():
+            self.drop_office(office.id)
+            self.add_office(office.id)
 
 
 def register_jobs(runner: JobRunner, services: Services) -> None:
@@ -137,7 +153,7 @@ def _tempo_handler(services: Services, office_id: str):  # type: ignore[no-untyp
     async def handler(_: JobContext) -> None:
         if services.notifier is None:
             return
-        await send_tempo_reminder(
+        outcome = await send_tempo_reminder(
             office_id=office_id,
             offices=services.offices,
             notifier=services.notifier,
@@ -145,7 +161,33 @@ def _tempo_handler(services: Services, office_id: str):  # type: ignore[no-untyp
             clock=services.clock,
             policy=services.tempo_policy,
             silent_policy=services.silent_policy,
+            posts=services.posts,
+            gap_minutes=services.reminder_times.tempo_gap_minutes,
         )
+        if outcome.skipped and outcome.skipped != "not-due":
+            logger.info("tempo for %s skipped: %s", office_id, outcome.skipped)
+
+    return handler
+
+
+def _holiday_handler(services: Services, office_id: str):  # type: ignore[no-untyped-def]
+    async def handler(_: JobContext) -> None:
+        if services.notifier is None:
+            return
+        outcome = await send_holiday_greeting(
+            office_id=office_id,
+            offices=services.offices,
+            notifier=services.notifier,
+            voice=services.voice,
+            clock=services.clock,
+            calendar=services.holiday_calendar,
+            posts=services.posts,
+            silent_policy=services.silent_policy,
+        )
+        if outcome.sent:
+            logger.info("greeted %s: %s", office_id, ", ".join(outcome.holidays))
+        elif outcome.skipped != "not-a-holiday":
+            logger.info("holiday greeting for %s skipped: %s", office_id, outcome.skipped)
 
     return handler
 

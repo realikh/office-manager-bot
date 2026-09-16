@@ -18,6 +18,7 @@ from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
 
+from tabelshchik.adapters.telegram.notifier import split_message
 from tabelshchik.adapters.telegram.routers.common import UNKNOWN
 from tabelshchik.application.audience import resolve
 from tabelshchik.application.chat import Thread, answer
@@ -98,16 +99,24 @@ async def talk(message: Message, services: BotContext) -> None:
     if not reply.text:
         return
 
-    try:
-        sent = await message.reply(reply.text)
-    except TelegramBadRequest:
-        # The message being replied to can be deleted between us reading it and
-        # answering. The answer is still worth sending; it just loses the threading.
-        sent = await message.answer(reply.text)
+    # A detailed answer can outgrow one message, and Telegram does not truncate an
+    # over-long one — it refuses it. Split on line breaks, so an escaped entity is never
+    # cut in half, and thread only the first part.
+    for index, chunk in enumerate(split_message(reply.text)):
+        if index == 0:
+            try:
+                sent = await message.reply(chunk)
+            except TelegramBadRequest:
+                # The message being replied to can be deleted between us reading it and
+                # answering. The answer is still worth sending; it just loses the threading.
+                sent = await message.answer(chunk)
+        else:
+            sent = await message.answer(chunk)
 
-    # Without this, a follow-up replying to the bot's own answer would find a chain that
-    # stops dead at the bot's message — the half of the conversation that matters most.
-    _remember(services, sent, author="Табельщик", replying_to=message.message_id)
+        # Without this, a follow-up replying to the bot's own answer would find a chain
+        # that stops dead at the bot's message — the half of the conversation that
+        # matters most. Every part hangs off the question, whichever one is replied to.
+        _remember(services, sent, author="Табельщик", replying_to=message.message_id)
 
 
 def _remember(

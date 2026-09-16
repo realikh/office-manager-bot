@@ -91,8 +91,8 @@ docker compose exec tabelshchik tabelshchik preview --office ovest
 
 Then check the three things that actually matter:
 
-1. **A reminder fires.** Set `reminders.attendance.time` a few minutes ahead, restart,
-   and wait.
+1. **A reminder fires.** In `/admin` → ⏰ Время рассылок, set the attendance time a few
+   minutes ahead and wait — no restart; the log shows the jobs being rebuilt.
 2. **The catch-up sweep works.** `docker compose restart` ten minutes before a reminder
    is due, so the process is down across the fire time. It should go out on startup,
    logged as replayed.
