@@ -7,9 +7,10 @@ code as a send, with only the last step swapped.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from tabelshchik.application.ports import Completion, SentMessage
+from tabelshchik.application.ports import Completion, CopiedMessages, SentMessage
 
 
 @dataclass
@@ -20,6 +21,11 @@ class RecordingNotifier:
     documents: list[tuple[int, str, int, str]] = field(default_factory=list)
     #: ("pin" | "unpin", chat_id, message_id), in call order.
     pin_calls: list[tuple[str, int, int]] = field(default_factory=list)
+    #: (chat_id, from_chat_id, message ids actually copied), in call order.
+    copies: list[tuple[int, int, tuple[int, ...]]] = field(default_factory=list)
+    #: Ids Telegram would skip as uncopyable — a service message, an invoice — which it
+    #: does silently rather than failing the call.
+    uncopyable: frozenset[int] = frozenset()
     fail: bool = False
     fail_pins: bool = False
     _next_id: int = 1000
@@ -61,6 +67,26 @@ class RecordingNotifier:
     async def unpin(self, chat_id: int, message_id: int) -> bool:
         self.pin_calls.append(("unpin", chat_id, message_id))
         return not self.fail_pins
+
+    async def copy(
+        self,
+        chat_id: int,
+        *,
+        from_chat_id: int,
+        message_ids: Sequence[int],
+        silent: bool = False,
+    ) -> CopiedMessages:
+        if self.fail:
+            return CopiedMessages(
+                chat_id=chat_id, error="Forbidden: bot was kicked from the supergroup chat"
+            )
+        kept = tuple(item for item in message_ids if item not in self.uncopyable)
+        self.copies.append((chat_id, from_chat_id, kept))
+        created = []
+        for _ in kept:
+            self._next_id += 1
+            created.append(self._next_id)
+        return CopiedMessages(chat_id=chat_id, message_ids=tuple(created))
 
     @property
     def last_message_id(self) -> int:

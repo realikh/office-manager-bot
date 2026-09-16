@@ -8,13 +8,14 @@ that could not be delivered must not mark the day as announced.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramAPIError
 from aiogram.types import BufferedInputFile, LinkPreviewOptions
 
-from tabelshchik.application.ports import SentMessage
+from tabelshchik.application.ports import CopiedMessages, SentMessage
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +89,31 @@ class TelegramNotifier:
             logger.exception("failed to send document to chat %s", chat_id)
             return None
         return SentMessage(chat_id=chat_id, message_id=message.message_id)
+
+    async def copy(
+        self,
+        chat_id: int,
+        *,
+        from_chat_id: int,
+        message_ids: Sequence[int],
+        silent: bool = False,
+    ) -> CopiedMessages:
+        """`copyMessages`, not `copyMessage`: the plural keeps an album an album.
+
+        Telegram skips parts it will not copy rather than failing the call, so fewer ids
+        can come back than went in.
+        """
+        try:
+            sent = await self.bot.copy_messages(
+                chat_id,
+                from_chat_id,
+                list(message_ids),
+                disable_notification=silent,
+            )
+        except TelegramAPIError as error:
+            logger.exception("failed to copy %s message(s) into chat %s", len(message_ids), chat_id)
+            return CopiedMessages(chat_id=chat_id, error=error.message)
+        return CopiedMessages(chat_id=chat_id, message_ids=tuple(item.message_id for item in sent))
 
     async def pin(self, chat_id: int, message_id: int, *, silent: bool = False) -> bool:
         """Pin one message. Not silent is the point: the pin is what notifies everyone."""

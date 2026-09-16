@@ -25,6 +25,7 @@ def main_menu(*, owner: bool = False) -> InlineKeyboardMarkup:
     """The admin menu. `owner` defaults to False so a forgotten argument fails closed."""
     rows = [
         (button("🏢 Офисы", "adm:offices"),),
+        (button("📨 Отправить сообщение", "adm:relay"),),
         (button("⚖️ Справедливость", "adm:fair"), button("🎭 Настроение", "adm:mood")),
         (button("📊 Состояние", "adm:status"), button("⚙️ Конфиг", "adm:config")),
         (button("💾 Резервная копия", "adm:backup"),),
@@ -130,6 +131,17 @@ def calendar_picker(office_id: str, codes: Sequence[str], current: str) -> Inlin
         for code in codes
     ]
     return keyboard(*rows, (button("‹ Назад", f"adm:oset:{office_id}"),))
+
+
+def relay_picker(entries: Sequence[tuple[str, str]], *, done: bool) -> InlineKeyboardMarkup:
+    """One button per group, carrying an office id — never a chat id.
+
+    The bottom button ends the flow either way. Before anything is sent that is a cancel;
+    after, it is the end, and calling it «Отмена» would read as an offer to unsend.
+    """
+    rows = [(button(label, f"adm:rto:{office_id}"),) for office_id, label in entries]
+    last = button("✔️ Готово", "adm:cancel") if done else button("✖️ Отмена", "adm:cancel")
+    return keyboard(*rows, (last,))
 
 
 def times_menu() -> InlineKeyboardMarkup:

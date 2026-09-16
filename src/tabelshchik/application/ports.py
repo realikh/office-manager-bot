@@ -365,6 +365,17 @@ class SentMessage:
     message_id: int
 
 
+@dataclass(frozen=True, slots=True)
+class CopiedMessages:
+    """What a copy produced. Nothing copied, and a reason, when Telegram refused outright."""
+
+    chat_id: int
+    message_ids: tuple[int, ...] = ()
+    #: Telegram's own words — "bot was kicked", "not enough rights to send photos" —
+    #: because it is the admin who has to go and fix whatever it was.
+    error: str | None = None
+
+
 class Notifier(Protocol):
     """Outbound messaging. Every send is explicit about whether it should make a noise."""
 
@@ -392,6 +403,17 @@ class Notifier(Protocol):
     #: not happen is recorded as such, so nobody later tries to take it down.
     async def pin(self, chat_id: int, message_id: int, *, silent: bool = False) -> bool: ...
     async def unpin(self, chat_id: int, message_id: int) -> bool: ...
+
+    #: Sends existing messages again as the bot's own — media, captions, formatting and
+    #: album grouping included, with no "forwarded from" line. Never raises either.
+    async def copy(
+        self,
+        chat_id: int,
+        *,
+        from_chat_id: int,
+        message_ids: Sequence[int],
+        silent: bool = False,
+    ) -> CopiedMessages: ...
 
 
 class PostKind(StrEnum):

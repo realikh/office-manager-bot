@@ -9,6 +9,7 @@ and never on the tap itself, which reads as a UI that does not respond.
 
 from __future__ import annotations
 
+import html
 import re
 from datetime import date, datetime
 from pathlib import Path
@@ -27,9 +28,12 @@ from tabelshchik.adapters.telegram.routers.admin import (
     fixed_screen,
     limits_screen,
     office_screen,
+    relay_confirm_screen,
+    relay_screen,
     roster_screen,
     times_screen,
 )
+from tabelshchik.application import relay
 from tabelshchik.application.ids import MAX_ID_LENGTH, MAX_OFFICE_ID_LENGTH
 from tabelshchik.application.manage_times import reminder_times
 from tabelshchik.application.policy import ChatPolicy, ReminderTimes
@@ -265,6 +269,20 @@ def test_the_cancel_handler_is_registered_before_any_state_handler() -> None:
     assert cancel < first_state
 
 
+def test_every_flow_state_can_be_cancelled_by_typing() -> None:
+    """`/cancel` is filtered to the states in `_IN_A_FLOW`. A state missing from it gets
+    "that looks like a command" in reply to /cancel, and no way out but the button."""
+    listed = ADMIN_SOURCE.split("_IN_A_FLOW = (")[1].split("\n)")[0]
+    declared = [
+        f"{group}.{state}"
+        for group, body in re.findall(r"class (\w+)\(StatesGroup\):\n((?:    .*\n)+)", ADMIN_SOURCE)
+        for state in re.findall(r"^    (\w+) = State\(\)", body, flags=re.MULTILINE)
+    ]
+    assert len(declared) >= len(STATE_GROUPS), "no states found — has the style changed?"
+    missing = [name for name in declared if name not in listed]
+    assert not missing, f"states /cancel cannot reach: {missing}"
+
+
 def test_every_free_text_prompt_offers_a_cancel_button() -> None:
     """Because people reach for a button, and typing the command is what went wrong.
 
@@ -393,7 +411,11 @@ def test_every_callback_a_screen_emits_fits_telegram_s_limit(sessions) -> None:
         fixed_day_screen(ctx, long_office, MONDAY),
         roster_screen(ctx, long_office),
         times_screen(ctx),
+        relay_screen(ctx, count=1, sent=()),
     ]
+    target = relay.destination_of(ctx.offices, long_office)
+    assert target is not None
+    screens.append(relay_confirm_screen(target, count=1))
     for screen in screens:
         assert screen is not None
         for data in callbacks(screen[1]):
@@ -437,6 +459,99 @@ def test_a_card_offers_a_way_to_change_it(ctx) -> None:
     card = card_screen(ctx, "anya")
     assert card is not None
     assert "adm:limemp:anya" in callbacks(card[1])
+
+
+# ------------------------------------------------------------------ sending a message
+
+
+def test_the_main_menu_leads_to_sending_a_message() -> None:
+    from tabelshchik.adapters.telegram.keyboards import main_menu
+
+    assert "adm:relay" in callbacks(main_menu())
+
+
+def test_the_picker_offers_each_office_group_once(ctx, sessions) -> None:
+    """Offices sharing a group are one button: one post there is read by all of them."""
+    seed(sessions, office_seed(id="pine", name="Pine", chatId=-100123, employees=[]))
+    seed(sessions, office_seed(id="tower", name="Tower", chatId=-100777, employees=[]))
+
+    text, markup = relay_screen(ctx, count=3, sent=())
+
+    assert "Сообщений: 3" in text
+    assert [data for data in callbacks(markup) if data.startswith("adm:rto:")] == [
+        "adm:rto:ovest",
+        "adm:rto:tower",
+    ]
+    assert "▫️ O'Vest · Pine" in labels(markup)
+
+
+def test_a_sent_group_is_ticked_and_named_in_the_text(ctx) -> None:
+    """Something in the text has to move, or Telegram declines the redraw and the tick
+    never appears."""
+    before = relay_screen(ctx, count=1, sent=())
+    after = relay_screen(ctx, count=1, sent=(-100123,))
+
+    assert "✅ O'Vest" in labels(after[1])
+    assert f"Отправлено: {html.escape("O'Vest")}." in after[0]
+    assert before[0] != after[0]
+
+
+def test_the_bottom_button_ends_the_flow_before_and_after_a_send(ctx) -> None:
+    """Both go to `adm:cancel`, which clears the flow. A picker left in its state would
+    take the admin's next message as more to send."""
+    before = relay_screen(ctx, count=1, sent=())[1]
+    after = relay_screen(ctx, count=1, sent=(-100123,))[1]
+
+    assert callbacks(before)[-1] == callbacks(after)[-1] == "adm:cancel"
+    assert labels(before)[-1] == "✖️ Отмена"
+    assert labels(after)[-1] == "✔️ Готово"
+
+
+def test_with_no_group_anywhere_the_picker_says_how_to_add_one(ctx) -> None:
+    ctx.roster.set_chat_id("ovest", None)
+
+    text, markup = relay_screen(ctx, count=1, sent=())
+
+    assert "/bind" in text
+    assert callbacks(markup) == ["adm:cancel"]
+
+
+def test_a_note_leads_the_picker(ctx) -> None:
+    text, _markup = relay_screen(ctx, count=1, sent=(), note="❌ Нет прав")
+    assert text.startswith("❌ Нет прав\n")
+
+
+def test_the_confirmation_names_the_group_and_the_count(ctx) -> None:
+    target = relay.destination_of(ctx.offices, "ovest")
+    assert target is not None
+
+    text, markup = relay_confirm_screen(target, count=3)
+
+    assert f"«{html.escape("O'Vest")}»" in text
+    assert "Сообщений: 3" in text
+    assert callbacks(markup) == ["adm:rgo:ovest", "adm:rback"]
+
+
+def test_every_relay_step_that_sends_or_redraws_holds_the_lock() -> None:
+    """Updates are handled concurrently. Without the lock a double-tap on «Да» read "not
+    sent yet" twice and posted the message twice, and the parts of an album each drew a
+    picker of their own."""
+    for name in ("receive_relay", "send_relay"):
+        body = ADMIN_SOURCE.split(f"async def {name}(")[1].split("\n@router.")[0]
+        assert "async with _RELAY_LOCKS[" in body, name
+
+
+def test_the_message_to_send_is_gathered_before_anything_is_decided() -> None:
+    body = ADMIN_SOURCE.split("async def receive_relay(")[1].split("\n@router.")[0]
+    assert body.index("_BURSTS.gather(") < body.index("_RELAY_LOCKS[")
+
+
+def test_where_it_is_copied_from_never_comes_from_a_button() -> None:
+    """Callback data can be forged; it must not be able to point the bot at somebody
+    else's chat."""
+    body = ADMIN_SOURCE.split("async def send_relay(")[1].split("\n@router.")[0]
+    assert 'source_chat_id=int(data["source"])' in body
+    assert "query.data" not in body
 
 
 # ------------------------------------------------------------------- delivery times

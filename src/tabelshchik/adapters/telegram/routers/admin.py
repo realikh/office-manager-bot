@@ -6,7 +6,10 @@ a permission check you have to remember to write is one you will eventually forg
 
 from __future__ import annotations
 
+import asyncio
 import html
+from collections import defaultdict
+from collections.abc import Collection
 from datetime import time, timedelta
 from typing import Any
 
@@ -18,6 +21,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, InlineKeyboardMarkup, Message
 
 from tabelshchik.adapters.reports.xlsx import build_workbook, schedule_caption
+from tabelshchik.adapters.telegram.bursts import Bursts
 from tabelshchik.adapters.telegram.commands import publish_for
 from tabelshchik.adapters.telegram.keyboards import (
     WEEKDAY_LABELS,
@@ -37,6 +41,7 @@ from tabelshchik.adapters.telegram.keyboards import (
     office_list,
     office_menu,
     office_settings_menu,
+    relay_picker,
     times_menu,
     weekday_picker,
 )
@@ -48,6 +53,7 @@ from tabelshchik.application import (
     manage_offices,
     manage_roster,
     manage_times,
+    relay,
 )
 from tabelshchik.application.build_report import ReportDay, build_report
 from tabelshchik.application.context import BotContext
@@ -63,6 +69,7 @@ from tabelshchik.application.manage_times import TimeError
 from tabelshchik.application.policy import RUSH_WINDOW_MINUTES
 from tabelshchik.application.ports import ScheduleTime
 from tabelshchik.application.regenerate_schedule import regenerate
+from tabelshchik.application.relay import Destination, Relayed, RelayError
 from tabelshchik.application.send_attendance_reminder import send_attendance_reminder
 from tabelshchik.application.voice import format_date, render_days
 from tabelshchik.config.loader import parse_file
@@ -108,6 +115,12 @@ class EditOffice(StatesGroup):
     waiting_for_deletion = State()
 
 
+class Relay(StatesGroup):
+    #: One state for the whole flow: whether the message has been chosen yet lives in the
+    #: data, so a part arriving late finds the same handler either way.
+    composing = State()
+
+
 SKIP = "-"
 
 #: Sanity bound on a typed desk count. There is no schema maximum, and a fat-fingered
@@ -132,6 +145,7 @@ _IN_A_FLOW = (
     EditOffice.waiting_for_name,
     EditOffice.waiting_for_chat_id,
     EditOffice.waiting_for_deletion,
+    Relay.composing,
 )
 
 COMMAND_IN_FLOW = "Это похоже на команду. Отправьте значение или нажмите «Отмена»."
@@ -1569,6 +1583,203 @@ async def apply_time(message: Message, state: FSMContext, services: BotContext) 
     await _finish(message, state, *times_screen(services))
 
 
+# ------------------------------------------------------------------ sending a message
+#
+# The admin sends the message first and picks the group afterwards, so what goes out is a
+# copy of a real message — media, album and formatting included. Two things set this flow
+# apart. Its input can arrive in several parts at once, which is what the batching is for.
+# And its output cannot be taken back, which is what the confirmation and the lock are for:
+# every step that reads the flow's data, talks to Telegram and writes the data back holds
+# it, so a double-tap on «Да» cannot read "not sent yet" twice.
+
+_BURSTS: Bursts[Message] = Bursts(quiet=0.6)
+_RELAY_LOCKS: defaultdict[int, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+RELAY_PROMPT = (
+    "Пришлите сообщение, которое нужно отправить от имени бота: текст, фото, документ, "
+    "альбом — что угодно. Оно уйдёт в точности как есть, без пометки «переслано».\n\n"
+    "Куда отправить, спрошу следом."
+)
+RELAY_ALREADY = (
+    "Что отправлять, уже выбрано — новое сообщение не добавлено. "
+    "Чтобы отправить его, закончите с этим и начните заново."
+)
+RELAY_GONE = "Отправка уже завершена, или бот перезапускался. Начните заново."
+NO_RELAY_TARGETS = "Ни у одного открытого офиса нет чата. Отправьте /bind в группе офиса."
+
+
+def _relay_key(event: Message | CallbackQuery) -> int:
+    """Whose relay this is. The router is private-only, so the person is also the chat."""
+    return event.from_user.id if event.from_user else 0
+
+
+@router.callback_query(F.data == "adm:relay")
+async def start_relay(query: CallbackQuery, state: FSMContext, services: BotContext) -> None:
+    if not relay.destinations(services.offices):
+        # Before the prompt rather than after the message: asking for something that has
+        # nowhere to go wastes whatever the admin sends next.
+        await query.answer(NO_RELAY_TARGETS, show_alert=True)
+        return
+    await _ask(
+        query,
+        state,
+        Relay.composing,
+        RELAY_PROMPT,
+        back_to="menu",
+    )
+
+
+@router.message(Relay.composing)
+async def receive_relay(message: Message, state: FSMContext, services: BotContext) -> None:
+    """The message to send — or its parts, gathered into one batch first.
+
+    Any content type, which is the point. Only the batch's first part can be a typed
+    command: the rest arrived alongside it, and typing cannot do that.
+    """
+    key = _relay_key(message)
+    batch = await _BURSTS.gather(key, message)
+    if batch is None:
+        return
+
+    async with _RELAY_LOCKS[key]:
+        if await state.get_state() != Relay.composing.state:
+            # Cancelled while the rest of the batch was arriving.
+            return
+
+        data = await state.get_data()
+        chosen = list(data.get("messages") or [])
+        if chosen:
+            # Ahead of the command guard, whose prompt carries only a cancel button and
+            # would take the picker away with it.
+            sent = list(data.get("sent") or [])
+            await _step(
+                message,
+                state,
+                *relay_screen(services, count=len(chosen), sent=sent, note=RELAY_ALREADY),
+            )
+            return
+
+        if await _refused_a_command(message, state):
+            return
+
+        ids = [part.message_id for part in batch]
+        if len(ids) > relay.MAX_MESSAGES:
+            await _step(
+                message,
+                state,
+                f"Не больше {relay.MAX_MESSAGES} сообщений за раз. Пришлите меньше.",
+                cancel_keyboard(),
+            )
+            return
+
+        # The source is remembered here, never read from a button: callback data can be
+        # forged, and it must not be able to point the bot at somebody else's chat.
+        await state.update_data(messages=ids, source=message.chat.id, sent=[])
+        await _step(message, state, *relay_screen(services, count=len(ids), sent=()))
+
+
+@router.callback_query(F.data.startswith("adm:rto:"))
+async def choose_relay_target(
+    query: CallbackQuery, state: FSMContext, services: BotContext
+) -> None:
+    data = await state.get_data()
+    ids = list(data.get("messages") or [])
+    sent = list(data.get("sent") or [])
+    if not ids:
+        await _replace(query, *_relay_gone(services, query))
+        return
+
+    target = relay.destination_of(services.offices, _tail(query))
+    if target is None:
+        note = f"❌ {relay.NO_DESTINATION}"
+        await _replace(query, *relay_screen(services, count=len(ids), sent=sent, note=note))
+        return
+    if target.chat_id in sent:
+        await query.answer("Сюда уже отправлено.", show_alert=True)
+        return
+    await _replace(query, *relay_confirm_screen(target, count=len(ids)))
+
+
+@router.callback_query(F.data.startswith("adm:rgo:"))
+async def send_relay(query: CallbackQuery, state: FSMContext, services: BotContext) -> None:
+    """Held under the lock from the first read to the last write.
+
+    A second tap waits, then finds the group already ticked. Without the lock both taps
+    read "not sent yet" before either had sent, and the group got the message twice.
+    """
+    async with _RELAY_LOCKS[_relay_key(query)]:
+        data = await state.get_data()
+        ids = list(data.get("messages") or [])
+        sent = list(data.get("sent") or [])
+        # No notifier only outside the running bot, where there is nothing to send with.
+        if not ids or services.notifier is None:
+            await _replace(query, *_relay_gone(services, query))
+            return
+
+        office_id = _tail(query)
+        target = relay.destination_of(services.offices, office_id)
+        if target is not None and target.chat_id in sent:
+            note = f"Уже отправлено в «{html.escape(target.label)}»."
+            await _replace(query, *relay_screen(services, count=len(ids), sent=sent, note=note))
+            return
+
+        try:
+            outcome = await relay.deliver(
+                office_id=office_id,
+                source_chat_id=int(data["source"]),
+                message_ids=ids,
+                actor_id=query.from_user.id,
+                offices=services.offices,
+                notifier=services.notifier,
+                audit=services.audit,
+            )
+        except RelayError as error:
+            # Back to the picker rather than an alert: another group is the obvious next
+            # move, and the reason stays on screen while the admin fixes it.
+            note = f"❌ {html.escape(str(error))}"
+            await _replace(query, *relay_screen(services, count=len(ids), sent=sent, note=note))
+            return
+
+        sent.append(outcome.destination.chat_id)
+        await state.update_data(sent=sent)
+        note = _delivered(outcome)
+        await _replace(query, *relay_screen(services, count=len(ids), sent=sent, note=note))
+
+
+@router.callback_query(F.data == "adm:rback")
+async def back_to_relay_targets(
+    query: CallbackQuery, state: FSMContext, services: BotContext
+) -> None:
+    data = await state.get_data()
+    ids = list(data.get("messages") or [])
+    if not ids:
+        await _replace(query, *_relay_gone(services, query))
+        return
+    sent = list(data.get("sent") or [])
+    await _replace(query, *relay_screen(services, count=len(ids), sent=sent))
+
+
+def _relay_gone(services: BotContext, event: Message | CallbackQuery) -> tuple[str, Any]:
+    """A picker from before a restart, or from a flow already finished.
+
+    Redrawn as the menu rather than answered with an alert, so the stale buttons go away
+    instead of staying live.
+    """
+    text, markup = _home(_is_owner(services, event))
+    return (f"{RELAY_GONE}\n\n{text}", markup)
+
+
+def _delivered(outcome: Relayed) -> str:
+    where = html.escape(outcome.destination.label)
+    if outcome.delivered < outcome.requested:
+        # Telegram drops what it will not copy instead of failing the call.
+        return (
+            f"⚠️ В «{where}» ушло {outcome.delivered} из {outcome.requested}: "
+            "остальное Telegram копировать не даёт."
+        )
+    return f"✅ Отправлено в «{where}»."
+
+
 # ----------------------------------------------------------------------------- admins
 #
 # Owner-only, twice over. These handlers hide the buttons, and `manage_admins` refuses
@@ -2061,6 +2272,42 @@ def times_screen(services: BotContext) -> tuple[str, InlineKeyboardMarkup]:
 
 def _hhmm(moment: time) -> str:
     return moment.strftime("%H:%M")
+
+
+def relay_screen(
+    services: BotContext, *, count: int, sent: Collection[int], note: str = ""
+) -> tuple[str, InlineKeyboardMarkup]:
+    """Where the message can go, and where it has already gone.
+
+    Built from the groups as they are now, so an office closed or unbound since the last
+    draw is simply not offered. The text names where it has gone rather than leaving that
+    to the ticks, for the same reason the other headings here carry counts.
+    """
+    targets = relay.destinations(services.offices)
+    lines = [note, ""] if note else []
+    lines.append(f"<b>Куда отправить?</b> Сообщений: {count}.")
+
+    done = [target.label for target in targets if target.chat_id in sent]
+    if done:
+        lines.append("Отправлено: " + ", ".join(html.escape(label) for label in done) + ".")
+    if not targets:
+        lines += ["", NO_RELAY_TARGETS]
+
+    entries = [
+        (target.office_id, f"{'✅' if target.chat_id in sent else '▫️'} {target.label}")
+        for target in targets
+    ]
+    return ("\n".join(lines), relay_picker(entries, done=bool(sent)))
+
+
+def relay_confirm_screen(target: Destination, *, count: int) -> tuple[str, InlineKeyboardMarkup]:
+    """The last stop before a whole group's phones go off, which is why it exists."""
+    return (
+        f"Отправить в «{html.escape(target.label)}»? Сообщений: {count}.\n\n"
+        "Уйдёт от имени бота, в точности как вы прислали, "
+        "и все в группе получат уведомление.",
+        confirm(f"adm:rgo:{target.office_id}", back="adm:rback"),
+    )
 
 
 def admins_screen(services: BotContext, *, viewer_id: int) -> tuple[str, InlineKeyboardMarkup]:

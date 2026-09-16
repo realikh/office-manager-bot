@@ -70,7 +70,7 @@ nothing to register.
 | Path | What belongs there |
 |---|---|
 | `domain/` | Entities, the min-cost-flow solver, the fairness ledger, the calendar, `stable_hash`. Pure. |
-| `application/` | Use cases (`send_attendance_reminder`, `send_tempo_reminder`, `send_holiday_greeting`, `regenerate_schedule`, `manage_absences`, `manage_roster`, `manage_offices`, `manage_admins`, `manage_limits`, `manage_times`, `chat`, `memory`, `prune_history`), the `ports.py` Protocols, `ids.py`, `voice.py`. |
+| `application/` | Use cases (`send_attendance_reminder`, `send_tempo_reminder`, `send_holiday_greeting`, `regenerate_schedule`, `manage_absences`, `manage_roster`, `manage_offices`, `manage_admins`, `manage_limits`, `manage_times`, `relay`, `chat`, `memory`, `prune_history`), the `ports.py` Protocols, `ids.py`, `voice.py`. |
 | `adapters/` | SQLAlchemy repositories, the Telegram routers, the OpenAI client, APScheduler, XLSX, the `holidays` calendar, fakes. |
 | `config/` | Pydantic models for `app.yaml` and `messages.yaml`; `OfficeSeed` for the import command. |
 | `bootstrap/` | The composition root, job registration, lifespan, `mapping.py`. |
@@ -226,7 +226,7 @@ not respond: the checkbox is right the next time you open the screen and never o
 Build screens from **explicit arguments** instead. In `routers/admin.py` those are
 `offices_screen`, `office_screen`, `office_settings_screen`, `chat_screen`,
 `calendar_screen`, `desks_screen`, `fixed_screen`, `fixed_day_screen`, `roster_screen`,
-`admins_screen`, `admin_card_screen`, `grant_screen` —
+`admins_screen`, `admin_card_screen`, `grant_screen`, `relay_screen`, `relay_confirm_screen` —
 each returns `(text, markup)` from its own parameters, and handlers do
 `await _replace(query, *some_screen(services, office_id))`.
 `tests/integration/test_admin_screens.py::test_no_handler_redraws_by_calling_another_handler`
@@ -238,6 +238,20 @@ difference is a ✅ needs something in the *text* to move too — hence the "о�
 counter, and the counts in the admins, offices and absences headings. And do not wrap the edit in a bare `except Exception`: that turns a crash in the
 screen being drawn into a second, stale message, which is indistinguishable from the UI
 not responding.
+
+### An album is several updates, handled at once
+
+Polling runs every update in its own task (`handle_as_tasks=True`, aiogram's default). An
+album is one update per picture and a multi-forward is one per message, so a flow step
+written for "the message" runs once per part, concurrently — five pictures drew five
+pickers. A double-tap is two callbacks at once, and both read "not sent yet".
+
+A step that accepts media gathers its parts first with `adapters/telegram/bursts.py`, and
+anything that reads flow state, calls Telegram and writes state back holds a per-person
+`asyncio.Lock` for the whole of it. 📨 Отправить сообщение (`relay` in `routers/admin.py`) is
+the worked example. Do not reach for `SimpleEventIsolation` instead: it serialises the
+whole update, so the second part of an album waits for the first to finish and can never
+join its batch.
 
 ### Scheduling: pass the timezone explicitly
 

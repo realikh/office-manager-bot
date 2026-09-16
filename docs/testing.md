@@ -92,7 +92,8 @@ integration tests and the CLI can share them.
 
 - **`RecordingNotifier`** — captures messages and documents; `last_text` is the usual
   assertion target. `fail=True` makes every send fail, for the "a failed send must not
-  mark the day announced" path.
+  mark the day announced" path. `copies` records what was copied where; `uncopyable`
+  names ids Telegram would silently skip, for the partial-delivery path.
 - **`StubChatModel`** — returns `reply` verbatim, including when JSON was asked for, so a
   test can hand back prose where the caller wanted an object and check the fallback holds.
   Records `prompts` and `json_requested`, and can report `prompt_tokens` /

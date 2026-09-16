@@ -267,8 +267,9 @@ group. Worth doing on the first day:
 
 - **/admin → ⚖️ Справедливость** — the surplus per person and the spread. On day one
   everything is zero; it becomes the number to watch.
-- **/admin → Офисы → … → 🔄 Перегенерировать** — publishes the schedule workbook to the
-  group, which is a good way to introduce the bot to people.
+- **/admin → Офисы → … → 🔄 Перегенерировать** — sends you the schedule workbook. Then
+  **/admin → 📨 Отправить сообщение**, forward the workbook to the bot and pick the office:
+  it lands in the group as the bot's own post, which is a good way to introduce the bot.
 - Tell the team they can DM the bot `/vacation` to manage their own time off. Absences
   landing on an already-announced day are handled: the person is removed, a replacement
   is drafted, and the group gets a correction.
