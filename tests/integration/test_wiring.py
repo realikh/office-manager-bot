@@ -276,6 +276,28 @@ def test_the_backup_falls_back_to_the_owner_when_no_admin_chat_is_set(services) 
     assert services.admin_chat_id == 1
 
 
+async def test_the_nightly_backup_arrives_without_a_notification(services) -> None:
+    """It lands at four in the morning. A ping at that hour wakes somebody up to tell them
+    that nothing has happened. Nothing recorded the flag before this test, so the send
+    could have been switched to a noisy one and no run would have said so."""
+    from tabelshchik.adapters.fakes import RecordingNotifier
+    from tabelshchik.adapters.scheduling.runner import JobContext
+    from tabelshchik.bootstrap.jobs import _backup_handler
+
+    notifier = RecordingNotifier()
+    services.notifier = notifier
+
+    await _backup_handler(services)(
+        JobContext(job="backup", scheduled_for=datetime(2026, 9, 18, 4, 0))
+    )
+
+    chat_id, filename, size, _caption, silent = notifier.documents[-1]
+    assert chat_id == services.admin_chat_id
+    assert filename.endswith(".db")
+    assert size > 0
+    assert silent is True
+
+
 def test_an_explicit_admin_chat_id_still_wins(tmp_path: Path) -> None:
     built = build_services(
         config_dir=Path("config"),

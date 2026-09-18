@@ -18,7 +18,10 @@ class RecordingNotifier:
     """Records what would have been sent instead of sending it."""
 
     messages: list[tuple[int, str, bool]] = field(default_factory=list)
-    documents: list[tuple[int, str, int, str]] = field(default_factory=list)
+    #: (chat_id, filename, byte count, caption, silent), in call order. `silent` is
+    #: recorded because a document nobody asked for — the nightly backup — must not
+    #: make a noise, and a dropped flag is invisible until somebody's phone rings.
+    documents: list[tuple[int, str, int, str, bool]] = field(default_factory=list)
     #: ("pin" | "unpin", chat_id, message_id), in call order.
     pin_calls: list[tuple[str, int, int]] = field(default_factory=list)
     #: (chat_id, from_chat_id, message ids actually copied), in call order.
@@ -56,7 +59,7 @@ class RecordingNotifier:
     ) -> SentMessage | None:
         if self.fail:
             return None
-        self.documents.append((chat_id, filename, len(content), caption))
+        self.documents.append((chat_id, filename, len(content), caption, silent))
         self._next_id += 1
         return SentMessage(chat_id=chat_id, message_id=self._next_id)
 
