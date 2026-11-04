@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 
 import pytest
 
 from tabelshchik.application.ports import Completion
 from tabelshchik.application.voice import (
+    EMOJI_CHOICES,
     SAFE_EMOJI,
     Announcement,
     Catalog,
     CommonText,
     MoodPolicy,
     Voice,
+    emoji_choices,
     format_date,
     format_long_date,
     lead_in,
@@ -454,6 +456,53 @@ async def test_more_people_than_emoji_simply_wraps() -> None:
     assert len(voice_with_pool.emojis(Mood.TOXIC, office_id="ovest", day=DAY, count=5)) == 5
 
 
+def icons_reply(*icons: str) -> str:
+    return json.dumps(
+        {"tail": "кофе стынет", "epithets": ["Герой света", "Душа компании"], "emojis": icons},
+        ensure_ascii=False,
+    )
+
+
+def test_the_icons_on_offer_change_from_day_to_day() -> None:
+    today = emoji_choices(office_id="ovest", day=DAY)
+    assert len(today) == EMOJI_CHOICES
+    assert set(today) <= SAFE_EMOJI
+    assert emoji_choices(office_id="ovest", day=DAY) == today
+    assert emoji_choices(office_id="ovest", day=DAY + timedelta(days=1)) != today
+
+
+def test_a_big_day_is_offered_an_icon_for_everybody() -> None:
+    assert len(emoji_choices(office_id="ovest", day=DAY, count=EMOJI_CHOICES + 5)) == (
+        EMOJI_CHOICES + 5
+    )
+
+
+async def test_the_prompt_offers_only_todays_icons_and_names_no_topics() -> None:
+    model = StubModel(icons_reply())
+    await decorate(model)
+
+    system = model.calls[0][0]
+    offered = set(emoji_choices(office_id="ovest", day=DAY))
+    assert all(icon in system for icon in offered)
+    assert not any(icon in system for icon in SAFE_EMOJI - offered)
+    assert "кофе" not in system.lower()
+    assert "дорог" not in system.lower()
+
+
+async def test_an_icon_the_model_repeats_is_replaced() -> None:
+    icon = emoji_choices(office_id="ovest", day=DAY)[0]
+    result = await decorate(StubModel(icons_reply(icon, icon)))
+    assert result.emojis[0] == icon
+    assert len(set(result.emojis)) == 2
+
+
+async def test_an_icon_from_outside_todays_set_is_refused() -> None:
+    outside = sorted(SAFE_EMOJI - set(emoji_choices(office_id="ovest", day=DAY)))[0]
+    inside = emoji_choices(office_id="ovest", day=DAY)[1]
+    result = await decorate(StubModel(icons_reply(outside, inside)))
+    assert result.emojis == ("•", inside)
+
+
 async def test_every_mood_produces_usable_text_without_a_model() -> None:
     for mood in Mood:
         result = await decorate(None, mood=mood)
@@ -572,7 +621,12 @@ async def test_announce_uses_the_model_when_it_behaves() -> None:
     model = StubModel(json.dumps({"text": "Неделя позади, Tempo ждёт"}, ensure_ascii=False))
 
     result = await voice(model).announce(
-        Mood.TOXIC, brief="задание", fallback="запасной", office_name="O'Vest"
+        Mood.TOXIC,
+        brief="задание",
+        fallback="запасной",
+        office_name="O'Vest",
+        office_id="ovest",
+        day=DAY,
     )
 
     assert result.generated
@@ -588,13 +642,23 @@ async def test_announce_uses_the_model_when_it_behaves() -> None:
 )
 async def test_announce_falls_back_when_the_model_does_not(reply_text) -> None:
     result = await voice(StubModel(reply_text)).announce(
-        Mood.TOXIC, brief="задание", fallback="запасной", office_name="O'Vest"
+        Mood.TOXIC,
+        brief="задание",
+        fallback="запасной",
+        office_name="O'Vest",
+        office_id="ovest",
+        day=DAY,
     )
     assert result == Announcement("запасной")
 
 
 async def test_announce_without_a_model_is_the_fallback() -> None:
     result = await voice(None).announce(
-        Mood.TOXIC, brief="задание", fallback="запасной", office_name="O'Vest"
+        Mood.TOXIC,
+        brief="задание",
+        fallback="запасной",
+        office_name="O'Vest",
+        office_id="ovest",
+        day=DAY,
     )
     assert result == Announcement("запасной")

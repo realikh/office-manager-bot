@@ -170,11 +170,11 @@ attendance:
   # Decoration in front of each roster line. Ours, never the model's — an emoji that comes
   # back from a generation can be anything at all, including nothing.
   emojis:
-    toxic: ["🛡", "⚡", "🔥", "☕", "🧱", "🗿"]
-    fun: ["🎉", "✨", "🎲", "🚀", "🍩", "🎯"]
-    happy: ["🌞", "✨", "🌟", "🤝", "🍀"]
-    sad: ["🌧", "🫠", "📎", "🕯"]
-    depressive: ["🌫", "🕳", "📉", "⏳"]
+    toxic: ["🛡", "⚡", "🔥", "☕", "🧱", "🗿", "⚔", "🏰", "⚓", "🔩", "🧲", "🌵"]
+    fun: ["🎉", "✨", "🎲", "🚀", "🍩", "🎯", "🎪", "🎨", "🎸", "🪄", "🧩", "🦫"]
+    happy: ["🌞", "✨", "🌟", "🤝", "🍀", "🌈", "🌱", "🌳", "🐝", "🥐"]
+    sad: ["🌧", "🫠", "📎", "🕯", "🌫", "🧊", "🐢"]
+    depressive: ["🌫", "🕳", "📉", "⏳", "🪫", "🕯", "🧊"]
 
   empty:
     toxic:

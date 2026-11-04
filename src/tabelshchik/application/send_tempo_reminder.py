@@ -155,6 +155,8 @@ async def send_tempo_reminder(
         brief=tempo_brief(context.spec, today, resolved, common, gap_minutes),
         fallback=_fallback(voice, resolved, mood, office_id, today, gap_minutes),
         office_name=context.office.name,
+        office_id=office_id,
+        day=today,
         forbidden=[employee.full_name for employee in roster],
         allow_words=(common.weekdays[today.weekday()], common.months[today.month - 1]),
         allow_numbers=(gap_minutes,) if gap_minutes else (),

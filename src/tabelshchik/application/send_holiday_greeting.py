@@ -104,6 +104,8 @@ async def send_holiday_greeting(
         brief=holiday_brief(today, occasions, common),
         fallback=fallback,
         office_name=office.name,
+        office_id=office_id,
+        day=today,
         forbidden=[employee.full_name for employee in offices.employees(office_id)],
         allow_words=(common.weekdays[today.weekday()], common.months[today.month - 1]),
         allow_numbers=(today.day,),

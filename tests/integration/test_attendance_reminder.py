@@ -21,7 +21,7 @@ from tabelshchik.application.send_attendance_reminder import (
     ReminderSkip,
     send_attendance_reminder,
 )
-from tabelshchik.application.voice import MoodPolicy, Voice
+from tabelshchik.application.voice import MoodPolicy, Voice, emoji_choices
 from tabelshchik.bootstrap.mapping import catalog, silent_policy
 from tabelshchik.config.loader import parse_file
 from tabelshchik.config.messages import MessagesConfig
@@ -473,15 +473,16 @@ async def test_the_model_picks_the_icon_that_goes_with_the_title(office) -> None
     nothing to do with the title beside it — ☕ never reached «Кофейный гений» — and two
     renders of the same day produced different titles under identical icons.
     """
+    first, second, *_ = emoji_choices(office_id="ovest", day=MONDAY)
     model = StubChatModel(
-        reply=decoration("кофе стынет", ["Кофейный гений", "Второй"], ["☕", "🗺"])
+        reply=decoration("кофе стынет", ["Кофейный гений", "Второй"], [first, second])
     )
     notifier = RecordingNotifier()
 
     await remind(office, at(MONDAY), notifier, model=model)
 
-    assert "☕ Кофейный гений" in notifier.last_text
-    assert "🗺 Второй" in notifier.last_text
+    assert f"{first} Кофейный гений" in notifier.last_text
+    assert f"{second} Второй" in notifier.last_text
 
 
 async def test_an_icon_outside_the_allowlist_falls_back_to_the_pool(office) -> None:
@@ -498,12 +499,13 @@ async def test_an_icon_outside_the_allowlist_falls_back_to_the_pool(office) -> N
 
 async def test_a_bad_icon_costs_only_its_own_slot(office) -> None:
     """Per slot, like the titles: one bad answer should not throw away a good one."""
-    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"], ["☕", "💀"]))
+    icon = emoji_choices(office_id="ovest", day=MONDAY)[0]
+    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"], [icon, "💀"]))
     notifier = RecordingNotifier()
 
     await remind(office, at(MONDAY), notifier, model=model)
 
-    assert "☕ Первый" in notifier.last_text
+    assert f"{icon} Первый" in notifier.last_text
     assert "💀" not in notifier.last_text
 
 

@@ -69,15 +69,21 @@ unintended.
 
 ```json
 {
-  "tail": "кофемашина уже нервничает",
+  "emojis": ["🛡", "🎉"],
   "epithets": ["Несгибаемый защитник", "Душа компании"],
-  "emojis": ["🛡", "🎉"]
+  "tail": "кофемашина уже нервничает"
 }
 ```
 
 The model is told only how many epithets are needed and what gender each must be
-(`1) мужской род, 2) женский род`), plus the emoji it may choose from. It is never sent
-the names.
+(`1) мужской род, 2) женский род`), plus today's icons. It is never sent the names.
+
+Today's icons are twenty from the allowlist, picked by `emoji_choices` with
+`stable_hash("emoji-choices", office, day)`, so a different set every day and the same set
+all day. The emojis come first in the contract and each title is written from its icon,
+so the set steers the titles and the tail too. The prompt used to offer the whole list and
+name the topics ("про кофе, дорогу, стойкость"), and every day came back as ☕ Кофейный
+гений and 🛡 Несгибаемый защитник: the persona lesson below, learnt a second time.
 
 Then:
 
@@ -86,8 +92,10 @@ Then:
   per-mood, per-gender epithet for that slot. A model that titles one person well and
   fumbles the next costs only the second title.
 - Each emoji runs through `render_emoji`, which is an **allowlist** (`SAFE_EMOJI`, about
-  ninety icons) rather than a pattern check. Rejected → the mood's own pool for that slot,
-  shuffled with a stable hash so icons do not repeat inside one message.
+  ninety icons) rather than a pattern check, narrowed to today's icons. Rejected, or
+  already used by somebody above: the mood's own pool for that slot, shuffled with a
+  stable hash, and then today's icons, so nothing repeats inside one message while
+  anything unused is left.
 
   Asking the model for the icon is what makes it mean something: ☕ goes to «Кофейный
   гений» and 🗺 to «Планировщик маршрутов». Before, the icon was dealt from a pool seeded

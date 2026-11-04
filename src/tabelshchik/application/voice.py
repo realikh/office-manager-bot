@@ -18,7 +18,7 @@ from __future__ import annotations
 import html
 import json
 import re
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -312,8 +312,7 @@ def _as_sentence(line: str) -> str:
 
 #: What the model may put in front of a name. An allowlist, not a pattern check: an
 #: emoji that matches its title is the whole point, but a work chat is not the place to
-#: discover what a model considers appropriate. Grouped by what a title might be about,
-#: which is also how the prompt presents them.
+#: discover what a model considers appropriate. Grouped by what a title might be about.
 SAFE_EMOJI: frozenset[str] = frozenset(
     # Coffee, food, the morning
     "☕🍵🧋🍩🥐🥪🍫🧃🍪"
@@ -337,9 +336,20 @@ SAFE_EMOJI: frozenset[str] = frozenset(
 )
 
 MAX_EMOJI_LENGTH = 4
+EMOJI_CHOICES = 20
+ANNOUNCEMENT_EMOJI_CHOICES = 8
 
 
-def render_emoji(raw: str) -> str | None:
+def emoji_choices(*, office_id: str, day: date, count: int = 0) -> tuple[str, ...]:
+    from tabelshchik.domain.rng import stable_hash
+
+    ranked = sorted(
+        SAFE_EMOJI, key=lambda icon: stable_hash("emoji-choices", office_id, day.isoformat(), icon)
+    )
+    return tuple(ranked[: max(EMOJI_CHOICES, count)])
+
+
+def render_emoji(raw: str, allowed: Collection[str] = SAFE_EMOJI) -> str | None:
     """One emoji from the allowlist, or None so the caller can fall back.
 
     Length is checked before membership because a variation selector or a skin-tone
@@ -350,7 +360,7 @@ def render_emoji(raw: str) -> str | None:
         return None
     # Trim the variation selector some models append; ️ renders identically.
     stripped = text.replace("\ufe0f", "")
-    return stripped if stripped in SAFE_EMOJI else None
+    return stripped if stripped in allowed else None
 
 
 def render_epithet(
@@ -625,6 +635,8 @@ class Voice:
         brief: str,
         fallback: str,
         office_name: str,
+        office_id: str,
+        day: date,
         forbidden: Sequence[str] = (),
         allow_words: Sequence[str] = (),
         allow_numbers: Sequence[int] = (),
@@ -639,8 +651,9 @@ class Voice:
         if self.model is None or not self.moods.enabled or not persona:
             return Announcement(fallback)
 
+        choices = emoji_choices(office_id=office_id, day=day)[:ANNOUNCEMENT_EMOJI_CHOICES]
         completion = await self.model.complete(
-            _announcement_system_prompt(persona),
+            _announcement_system_prompt(persona, choices),
             brief,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
@@ -715,8 +728,9 @@ class Voice:
         if self.model is None or not self.moods.enabled or not persona:
             return fallback
 
+        choices = emoji_choices(office_id=office_id, day=day, count=len(genders))
         completion = await self.model.complete(
-            _decoration_system_prompt(persona),
+            _decoration_system_prompt(persona, choices),
             _decoration_user_prompt(genders),
             max_tokens=self.max_tokens,
             temperature=self.temperature,
@@ -761,11 +775,7 @@ class Voice:
 
         raw_emojis = payload.get("emojis")
         icons = raw_emojis if isinstance(raw_emojis, list) else []
-        emojis = tuple(
-            _offered(icons, index, gender, lambda raw, _gender: render_emoji(raw))
-            or fallback.emojis[index]
-            for index, gender in enumerate(genders)
-        )
+        emojis = _distinct_emojis(icons, choices, fallback.emojis)
         return Decoration(tail=tail, epithets=epithets, emojis=emojis)
 
     def _static_tail(self, mood: Mood, *, office_id: str, day: date) -> str:
@@ -789,6 +799,19 @@ def _offered(
     return clean(str(values[index]), gender)
 
 
+def _distinct_emojis(
+    offered: list[object], choices: Sequence[str], spare: Sequence[str]
+) -> tuple[str, ...]:
+    chosen: list[str] = []
+    for index, own in enumerate(spare):
+        raw = offered[index] if index < len(offered) else None
+        icon = render_emoji(raw, choices) if isinstance(raw, str) else None
+        if icon is None or icon in chosen:
+            icon = next((item for item in (own, *spare, *choices) if item not in chosen), own)
+        chosen.append(icon)
+    return tuple(chosen)
+
+
 def _parse_json(raw: str) -> dict[str, object] | None:
     """Models occasionally wrap JSON in a fence even when asked not to."""
     text = raw.strip()
@@ -802,25 +825,25 @@ def _parse_json(raw: str) -> dict[str, object] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _decoration_system_prompt(persona: str) -> str:
+def _decoration_system_prompt(persona: str, choices: Sequence[str]) -> str:
     return (
         f"{persona}\n\n"
         "Ты оформляешь ежедневное напоминание о выходе в офис. Даты, имена и название "
         "офиса подставляются автоматически — тебе их не сообщают и упоминать их нельзя.\n"
         "Верни СТРОГО JSON вида: "
-        '{"tail": "...", "epithets": ["...", "..."], "emojis": ["...", "..."]}\n'
-        "tail — одна короткая фраза (3–12 слов) в твоём настроении. Она встанет в конец "
-        "вступительной строки.\n"
+        '{"emojis": ["...", "..."], "epithets": ["...", "..."], "tail": "..."}\n'
+        "emojis — сначала выбери по одному эмодзи на каждый титул, все разные, только из "
+        f"сегодняшнего набора: {' '.join(choices)}\n"
         "epithets — шуточные титулы по 1–3 слова, ровно столько же, сколько указано, "
-        "и строго в том же порядке и роде.\n"
-        "emojis — по одному эмодзи на каждый титул, в том же порядке, ПО СМЫСЛУ титула: "
-        "про кофе — кофейное, про дорогу — дорожное, про стойкость — щит или крепость. "
-        "Выбирай только из этого списка, по одному символу, не повторяясь:\n"
-        f"{' '.join(sorted(SAFE_EMOJI))}\n"
+        "и строго в том же порядке и роде. Каждый титул придумай по смыслу его эмодзи, "
+        "и не первый, что приходит в голову.\n"
+        "tail — одна короткая фраза (3–12 слов) в твоём настроении. Она встанет в конец "
+        "вступительной строки. Пусть её тоже подскажет сегодняшний набор, а не привычные "
+        "темы.\n"
         "Запрещено в tail и epithets: числа и цифры, даты, дни недели, месяцы, названия "
         "офисов, имена людей, @упоминания, эмодзи, разметка, капслок.\n"
-        "Титулы — только доброжелательно-шуточные: про стойкость, кофе, дорогу, "
-        "переговорки. Никогда про внешность, компетентность, здоровье или личную жизнь."
+        "Титулы — только доброжелательно-шуточные. Никогда про внешность, "
+        "компетентность, здоровье или личную жизнь."
     )
 
 
@@ -832,13 +855,14 @@ def _decoration_user_prompt(genders: Sequence[str]) -> str:
     return f"Нужно {len(genders)} титулов. Род по порядку: {listed}."
 
 
-def _announcement_system_prompt(persona: str) -> str:
+def _announcement_system_prompt(persona: str, choices: Sequence[str]) -> str:
     return (
         f"{persona}\n\n"
         "Ты пишешь одно сообщение в рабочий чат. Задание — в сообщении пользователя.\n"
         'Верни СТРОГО JSON вида: {"text": "..."}\n'
         "text — готовое сообщение на русском языке: два-четыре предложения, не длиннее "
-        "четырёхсот символов, в твоём сегодняшнем настроении. Можно одно-два эмодзи.\n"
+        "четырёхсот символов, в твоём сегодняшнем настроении. Можно одно-два эмодзи, "
+        f"только из сегодняшнего набора: {' '.join(choices)}\n"
         "Ссылку, упоминания людей и название офиса бот добавит сам — не пиши их.\n"
         "Запрещено: цифры (кроме тех, что прямо разрешены в задании), даты, дни недели и "
         "месяцы (кроме разрешённых в задании), слово «завтра», имена людей, @упоминания, "
