@@ -203,7 +203,7 @@ validators will refuse to boot otherwise.
 | `schedule` | `horizonWeeks` generated, `freezeWeeks` immutable (must be smaller, validated), `maxDaysPerWeek`, `absencePolicy`, `surplusClamp`. When the extender runs is set from `/admin`. |
 | `retention` | `scheduleMonths` 3, `jobRunsDays`, `auditDays`, `aiUsageDays`, `chatMessagesDays`. |
 | `personality` | `moods` weights, `safeMode`, `bannedTerms`. |
-| `ai` | Model, sampling, daily limits, triggers, and `chat` context budgets. `maxTokens` bounds what reminders and greetings ask for; `chat.maxTokens` bounds one chat reply. The two limits are **defaults** — see above. |
+| `ai` | Model, reasoning effort, sampling, daily limits, triggers, and `chat` context budgets. `maxTokens` bounds what reminders and greetings ask for; `chat.maxTokens` bounds one chat reply. The two limits are **defaults** — see above. |
 | `health` | `pingUrl` dead-man's switch, heartbeat file and staleness, `catchUpGraceHours`, `nightlyBackup`. |
 
 ### `offices/<id>.yaml`

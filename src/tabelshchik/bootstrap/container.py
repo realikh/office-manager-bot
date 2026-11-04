@@ -298,6 +298,7 @@ def _chat_model(app: AppConfig, secrets: Secrets) -> ChatModel | None:
     return OpenAiChatModel(
         api_key=secrets.openai_api_key,
         model=app.ai.model,
+        reasoning_effort=app.ai.reasoning_effort,
         timeout=app.ai.request_timeout_seconds,
         max_retries=app.ai.max_retries,
     )

@@ -24,6 +24,7 @@ Mood = Literal["toxic", "fun", "happy", "sad", "depressive"]
 
 Identifier = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")]
 AiTrigger = Literal["mention", "reply", "private"]
+ReasoningEffort = Literal["none", "minimal", "low", "medium", "high", "xhigh", "max"]
 TelegramUsername = Annotated[str, Field(pattern=r"^[A-Za-z0-9_]{5,32}$")]
 
 
@@ -214,7 +215,8 @@ class ChatContextSection(Base):
 
 class AiSection(Base):
     enabled: bool = True
-    model: str = "gpt-4.1-nano"
+    model: str = "gpt-6-luna"
+    reasoning_effort: ReasoningEffort | None = "none"
     max_tokens: int = Field(default=400, ge=1, le=4000)
     temperature: float = Field(default=1.0, ge=0.0, le=2.0)
     per_user_daily_limit: int = Field(default=10, ge=0)

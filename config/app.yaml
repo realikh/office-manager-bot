@@ -59,7 +59,8 @@ personality:
 
 ai:
   enabled: true
-  model: gpt-4.1-nano       # cheapest nano-class chat model; one line to change
+  model: gpt-6-luna         # cheapest small chat model; one line to change
+  reasoningEffort: none     # null for a model without reasoning
   maxTokens: 400           # the short things reminders ask for; chat has its own below
   temperature: 1.0
   # Both are defaults. An admin can move either from /admin → 🤖 Лимиты ИИ without a

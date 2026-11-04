@@ -23,7 +23,8 @@ ENDPOINT = "https://api.openai.com/v1/chat/completions"
 @dataclass
 class OpenAiChatModel:
     api_key: str
-    model: str = "gpt-4.1-nano"
+    model: str = "gpt-6-luna"
+    reasoning_effort: str | None = None
     timeout: float = 20.0
     max_retries: int = 2
     endpoint: str = ENDPOINT
@@ -49,6 +50,8 @@ class OpenAiChatModel:
                 {"role": "user", "content": user},
             ],
         }
+        if self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
         if json_object:
             # Constrained decoding, so a reply that has to be parsed cannot come back as
             # prose with a fenced block in the middle of it.

@@ -314,8 +314,15 @@ escaped ellipsis.
 
 ## Cost
 
-- `gpt-4.1-nano`, `ai.temperature` 1.0. `ai.maxTokens` 400 for reminders and greetings,
-  `ai.chat.maxTokens` 2000 for a chat reply.
+- `gpt-6-luna` with `ai.reasoningEffort: none`, `ai.temperature` 1.0. `ai.maxTokens` 400 for
+  reminders and greetings, `ai.chat.maxTokens` 2000 for a chat reply. Reasoning tokens count
+  against `max_completion_tokens`, so at the API's default effort a 400-token reminder can
+  spend the whole budget thinking and come back empty. Set `reasoningEffort: null` for a
+  model without reasoning, which rejects the parameter.
+- `gpt-4.1-nano` was the model until OpenAI shut it down on 2026-10-23. Every request was
+  then refused with a 4xx, and every caller fell back to the written lines without a word.
+  A shutdown looks exactly like that, so check
+  [the deprecations page](https://developers.openai.com/api/docs/deprecations) first.
 - **One call per chat message**, capped at 10 per person per day and 200 globally
   (`globalDailyLimit` is a stop-loss, not a quota). The worst case is the cap times a
   full 2000-token reply — at nano prices, cents a day. A reply is only that long when the
