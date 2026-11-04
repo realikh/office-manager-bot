@@ -120,7 +120,7 @@ def end_tenure(
     regenerate_after: bool = True,
 ) -> RosterChange:
     employee = _require(offices, office_id, employee_id)
-    last_day = on or clock.today()
+    last_day = on or clock.today() - timedelta(days=1)
 
     # Always explicit. Passing None here is the hard delete described at the top of this
     # module, and it is never what an admin pressing "Уволить" meant.

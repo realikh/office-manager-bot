@@ -442,12 +442,15 @@ async def employee_card_view(query: CallbackQuery, services: BotContext) -> None
     await _show_card(query, services, _tail(query))
 
 
-async def _show_card(query: CallbackQuery, services: BotContext, employee_id: str) -> None:
+async def _show_card(
+    query: CallbackQuery, services: BotContext, employee_id: str, notice: str = ""
+) -> None:
     screen = card_screen(services, employee_id)
     if screen is None:
         await query.answer(NO_SUCH_EMPLOYEE, show_alert=True)
         return
-    await _replace(query, *screen)
+    text, markup = screen
+    await _replace(query, f"{notice}\n\n{text}" if notice else text, markup)
 
 
 @router.callback_query(F.data.startswith("adm:empfire:"))
@@ -492,8 +495,13 @@ async def fire_employee(query: CallbackQuery, services: BotContext) -> None:
         await query.answer(str(error), show_alert=True)
         return
 
-    await query.answer(f"Освобождено дней: {len(change.released)}")
-    await _show_card(query, services, employee_id)
+    await _show_card(
+        query,
+        services,
+        employee_id,
+        notice=f"✅ {html.escape(change.full_name)} уволен(а). "
+        f"Освобождено дней: {len(change.released)}.",
+    )
 
 
 @router.callback_query(F.data.startswith("adm:emprest:"))
@@ -505,7 +513,7 @@ async def restore_employee(query: CallbackQuery, services: BotContext) -> None:
         return
 
     try:
-        manage_roster.restore(
+        change = manage_roster.restore(
             office_id=found[0],
             employee_id=employee_id,
             actor_id=query.from_user.id,
@@ -521,8 +529,12 @@ async def restore_employee(query: CallbackQuery, services: BotContext) -> None:
         await query.answer(str(error), show_alert=True)
         return
 
-    await query.answer("Восстановлен")
-    await _show_card(query, services, employee_id)
+    await _show_card(
+        query,
+        services,
+        employee_id,
+        notice=f"♻️ {html.escape(change.full_name)} восстановлен(а).",
+    )
 
 
 @router.callback_query(F.data.startswith("adm:empname:"))
@@ -2072,7 +2084,7 @@ def card_screen(services: BotContext, employee_id: str) -> tuple[str, InlineKeyb
     ]
     if departed:
         ended = employee.ended_on.isoformat() if employee.ended_on else "—"
-        lines.append(f"<i>Уволен с {ended}</i>")
+        lines.append(f"<i>Уволен, последний рабочий день: {ended}</i>")
 
     return ("\n".join(lines), employee_card(office_id, employee.id, departed=departed))
 

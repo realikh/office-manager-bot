@@ -181,7 +181,7 @@ def test_ending_a_tenure_frees_the_days_and_fills_them_again(office) -> None:
     )
 
     assert change.released
-    assert not [day for day in scheduled_days(office, "borya") if day > TODAY]
+    assert not [day for day in scheduled_days(office, "borya") if day >= TODAY]
     # The desks did not simply vanish with them.
     for day in change.released:
         assert SqlScheduleStore(office).day("ovest", day).roster
@@ -195,8 +195,8 @@ def test_the_person_and_their_history_survive_the_removal(office) -> None:
     manage_roster.end_tenure(office_id="ovest", employee_id="borya", actor_id=1, **stores(office))
 
     employee = next(e for e in SqlOfficeStore(office).employees("ovest") if e.id == "borya")
-    assert employee.ended_on == TODAY
-    assert not employee.in_tenure(TODAY + timedelta(days=1))
+    assert employee.ended_on == TODAY - timedelta(days=1)
+    assert not employee.in_tenure(TODAY)
     assert "borya" in SqlLedgerStore(office).entries("ovest") or not ledger_before
 
 

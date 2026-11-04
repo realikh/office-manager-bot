@@ -18,6 +18,7 @@ from typing import Any
 import pytest
 
 from tabelshchik.adapters.clock import FixedClock
+from tabelshchik.adapters.db.repositories import SqlLedgerStore
 from tabelshchik.adapters.holiday_calendar import PackageHolidayCalendar
 from tabelshchik.adapters.telegram.routers.admin import (
     MAX_DESKS,
@@ -33,10 +34,10 @@ from tabelshchik.adapters.telegram.routers.admin import (
     roster_screen,
     times_screen,
 )
-from tabelshchik.application import relay
+from tabelshchik.application import manage_roster, relay
 from tabelshchik.application.ids import MAX_ID_LENGTH, MAX_OFFICE_ID_LENGTH
 from tabelshchik.application.manage_times import reminder_times
-from tabelshchik.application.policy import ChatPolicy, ReminderTimes
+from tabelshchik.application.policy import ChatPolicy, ReminderTimes, SchedulePolicy
 from tabelshchik.application.voice import MoodPolicy, Voice
 from tabelshchik.bootstrap.mapping import catalog
 from tabelshchik.config.loader import parse_file
@@ -200,6 +201,26 @@ def test_the_roster_lists_everyone_with_a_card_button(ctx) -> None:
 
 def test_a_departed_person_is_listed_and_marked(ctx) -> None:
     ctx.roster.remove_employee("borya", ended_on=date(2026, 9, 1))
+    assert any("Боря · уволен" in label for label in labels(roster_screen(ctx, "ovest")[1]))
+
+
+def test_somebody_let_go_today_is_shown_as_gone_straight_away(ctx, sessions) -> None:
+    manage_roster.end_tenure(
+        office_id="ovest",
+        employee_id="borya",
+        actor_id=1,
+        offices=ctx.offices,
+        roster=ctx.roster,
+        schedule=ctx.schedule,
+        ledger=SqlLedgerStore(sessions),
+        clock=ctx.clock,
+        policy=SchedulePolicy(horizon_weeks=4, freeze_weeks=1),
+    )
+
+    card = card_screen(ctx, "borya")
+    assert card is not None
+    assert "adm:emprest:borya" in callbacks(card[1])
+    assert "adm:empfire:borya" not in callbacks(card[1])
     assert any("Боря · уволен" in label for label in labels(roster_screen(ctx, "ovest")[1]))
 
 
