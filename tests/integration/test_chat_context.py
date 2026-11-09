@@ -108,6 +108,16 @@ async def test_the_model_is_told_not_to_volunteer_the_calendar(office) -> None:
     assert "если тебя об этом не" in model.prompts[0][0]
 
 
+async def test_the_reply_follows_the_language_of_the_question(office) -> None:
+    model = StubChatModel(reply=reply())
+    await ask(office, model, question="How do I reverse a list in Python?")
+
+    system = model.prompts[0][0]
+    rules = system.split("\n\n")[1]
+    assert rules.startswith("Отвечай на том языке, на котором написано сообщение")
+    assert "Пиши на русском" not in system
+
+
 async def test_the_persona_no_longer_prescribes_joke_topics(office) -> None:
     """The Monday fixation came from the persona listing Mondays as an allowed subject.
 

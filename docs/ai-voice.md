@@ -215,6 +215,15 @@ A JSON object that does not parse is almost always a reply the token ceiling cut
 `_salvage` recovers the text of `"reply"` up to the cut and ends it with `…`; it used to be
 sent verbatim, braces and all.
 
+### Which language
+
+The language of the message it is answering, whatever that is; Russian only when the
+message is Russian or its language cannot be told. That is the first rule of the system
+prompt, with an English gloss beside it, because everything else in the prompt is Russian
+and a rule buried in the middle ("пиши на русском, если собеседник не пишет на другом
+языке") lost to all of it: English questions came back in Russian. The canned lines
+(rate limit, failure, chat switched off) are copy in `messages.yaml` and stay Russian.
+
 ### What it will talk about, and for how long
 
 Anything. The system prompt tells the model to answer any question — code, science,
