@@ -650,4 +650,4 @@ def test_old_posts_are_pruned_but_the_pin_still_up_is_not(sessions) -> None:
     removed = SqlMaintenance(sessions).delete_posts_before(date(2026, 6, 1))
 
     assert removed == 2
-    assert [post.day for post in posts.pinned("ovest", PostKind.TEMPO, -1)] == [older]
+    assert [post.day for post in posts.pinned(PostKind.TEMPO, -1)] == [older]

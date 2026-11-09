@@ -1419,11 +1419,10 @@ class SqlPostStore(SqlRepository):
             ).first()
             return found is not None
 
-    def pinned(self, office_id: str, kind: PostKind, chat_id: int) -> Sequence[PostRecord]:
+    def pinned(self, kind: PostKind, chat_id: int) -> Sequence[PostRecord]:
         with session_scope(self._sessions) as session:
             rows = session.scalars(
                 select(models.BotPost)
-                .where(models.BotPost.office_id == office_id)
                 .where(models.BotPost.kind == kind)
                 .where(models.BotPost.chat_id == chat_id)
                 .where(models.BotPost.pinned)

@@ -150,8 +150,9 @@ reading the source.
 
 Cross-file rules live in `loader._check_across_offices`: office ids, employee ids and
 Telegram usernames must each be globally unique. **Chat ids deliberately need not be** —
-two offices may share one Telegram group, and messages into a shared chat carry an office
-header so they stay distinguishable. `LoadedConfig.shared_chat_ids` reports which.
+two offices may share one Telegram group. The attendance reminder into a shared chat
+carries an office header so the two rosters stay distinguishable; Tempo and the holiday
+greeting go out once per group. `LoadedConfig.shared_chat_ids` reports which.
 
 Check any change without starting the bot:
 

@@ -64,11 +64,15 @@ being stored and then ignored.
 `test_the_old_pin_comes_down_first_even_after_a_restart` is the regression for a pin
 tracked in memory, which a redeploy forgot; `test_a_reminder_goes_out_once_a_day_whatever_the_scheduler_does`
 covers a time moved after the job fired;
+`test_two_offices_in_one_chat_get_one_tempo_message` is the regression for a shared group
+that got the reminder twice, once per office, each copy tagging everybody;
 `test_an_answer_cut_off_by_the_token_ceiling_is_recovered_not_sent_as_json` covers a chat
 reply that ran out of tokens mid-JSON.
 
 **`tests/integration/test_holiday_greeting.py`** — one greeting per holiday, per chat, per
-day, and none on a transferred day off. The last few tests read the real `holidays`
+day, and none on a transferred day off.
+`test_a_shared_chat_is_greeted_once_even_when_both_jobs_run_together` runs both offices'
+jobs concurrently, the way the scheduler does. The last few tests read the real `holidays`
 package, so a calendar upgrade that changes past data shows up here first.
 
 ## Tests that pin exact wording

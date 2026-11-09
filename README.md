@@ -15,10 +15,11 @@ rather than a repair.
   attendance as equal as possible — provably, not heuristically (see below).
 - **Attendance reminders** at a time set from the bot, announcing the next working day
   and tagging everyone on it. Mon→Tue, Fri→Mon and Sun→Mon all fall out of one rule.
-- **Tempo reminders** on the last working day of the week and of the month — one message
-  when they coincide, written by the model in the day's mood, with the link, everyone
-  tagged, and the new message pinned in place of the last one. Sent in the last half hour
-  of the workday, it says how many minutes are left to spend on it.
+- **Tempo reminders** on the last working day of the week and of the month: one message
+  when they coincide, and one per group when offices share it, written by the model in the
+  day's mood, with the link, pinned in place of the last one. The pin notifies everyone, so
+  nobody is tagged. Sent in the last half hour of the workday, it says how many minutes are
+  left to spend on it.
 - **Holiday greetings** on public holidays, from a calendar that is checked every day and
   kept current by a weekly workflow.
 - **A colour-coded XLSX** published whenever a schedule changes, with a statistics sheet

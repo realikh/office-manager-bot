@@ -11,9 +11,11 @@ and third days of Nauryz are the same holiday as the first.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, timedelta
 
+from tabelshchik.application.chats import Destination, destination_of, speaker
 from tabelshchik.application.policy import SilentPolicy
 from tabelshchik.application.ports import (
     Celebration,
@@ -26,6 +28,7 @@ from tabelshchik.application.ports import (
     PostStore,
 )
 from tabelshchik.application.voice import CommonText, Voice
+from tabelshchik.domain.entities import Office
 
 #: Holidays where irony reads as disrespect, whatever the bot's mood that day. Matched on
 #: the English name the calendar provides, which is the same for every language of the
@@ -81,14 +84,21 @@ async def send_holiday_greeting(
         return GreetingOutcome(office_id, skipped="not-a-holiday")
     names = tuple(item.name for item in occasions)
 
+    shared = destination_of(offices, office_id)
     destination = chat_id if chat_id is not None else office.chat_id
     recording = not dry_run and chat_id is None
     if recording:
+        if shared is not None and not _speaks_for(shared, office_id, calendar, today):
+            return GreetingOutcome(office_id, names, skipped="shared-chat")
         if posts.sent(office_id, PostKind.HOLIDAY, today):
             return GreetingOutcome(office_id, names, skipped="already-sent")
         # Two offices in one group would otherwise wish it a happy holiday twice.
         if destination is not None and posts.sent_to_chat(destination, PostKind.HOLIDAY, today):
             return GreetingOutcome(office_id, names, skipped="chat-already-greeted")
+
+    members = shared.offices if shared is not None else (office,)
+    occasions = _celebrated_in(calendar, members, today)
+    names = tuple(item.name for item in occasions)
 
     mood = voice.mood_for(office_id=office_id, day=today)
     common = voice.catalog.common
@@ -106,7 +116,9 @@ async def send_holiday_greeting(
         office_name=office.name,
         office_id=office_id,
         day=today,
-        forbidden=[employee.full_name for employee in offices.employees(office_id)],
+        forbidden=[
+            employee.full_name for member in members for employee in offices.employees(member.id)
+        ],
         allow_words=(common.weekdays[today.weekday()], common.months[today.month - 1]),
         allow_numbers=(today.day,),
     )
@@ -143,6 +155,31 @@ def new_celebrations(calendar: HolidayCalendar, country: str, today: date) -> li
     """Today's holidays that did not already start yesterday."""
     yesterday = {item.name for item in calendar.celebrations(country, today - timedelta(days=1))}
     return [item for item in calendar.celebrations(country, today) if item.name not in yesterday]
+
+
+def _speaks_for(
+    destination: Destination, office_id: str, calendar: HolidayCalendar, today: date
+) -> bool:
+    def due(office: Office) -> bool:
+        return office.id == office_id or bool(
+            new_celebrations(calendar, office.holiday_calendar, today)
+        )
+
+    first = speaker(destination, due)
+    return first is not None and first.id == office_id
+
+
+def _celebrated_in(
+    calendar: HolidayCalendar, members: Sequence[Office], today: date
+) -> list[Celebration]:
+    seen: set[str] = set()
+    found: list[Celebration] = []
+    for member in members:
+        for item in new_celebrations(calendar, member.holiday_calendar, today):
+            if item.name not in seen:
+                seen.add(item.name)
+                found.append(item)
+    return found
 
 
 def is_solemn(occasions: list[Celebration]) -> bool:

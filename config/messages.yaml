@@ -198,7 +198,7 @@ attendance:
 
 tempo:
   url: "https://jira.fortebank.com/secure/Tempo.jspa#/my-work/week?type=LIST"
-  # Below the message, above the tagged names. Markup is ours: the link is the text.
+  # Below the message. Markup is ours: the link is the text.
   footer: '👉 <a href="{url}">Заполнить часы в Tempo</a>'
 
   # The model writes the reminder; these are what goes out when it cannot. They sit on

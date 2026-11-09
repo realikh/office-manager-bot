@@ -26,7 +26,7 @@ from tabelshchik.adapters.db.repositories import (
 )
 from tabelshchik.adapters.fakes import RecordingNotifier
 from tabelshchik.adapters.telegram.bursts import Bursts
-from tabelshchik.application import relay
+from tabelshchik.application import chats, relay
 from tabelshchik.application.relay import Relayed, RelayError
 
 from .conftest import office_seed, seed
@@ -120,11 +120,11 @@ def test_offices_sharing_a_group_are_one_destination(stores) -> None:
     """One post there is read by both offices; two buttons would invite sending it twice."""
     seed(stores.sessions, office_seed(id="pine", name="Pine", chatId=GROUP, employees=[]))
 
-    [target] = relay.destinations(stores.offices)
+    [target] = chats.destinations(stores.offices)
 
     assert target.chat_id == GROUP
     assert target.label == "O'Vest · Pine"
-    assert relay.destination_of(stores.offices, "pine") == target
+    assert chats.destination_of(stores.offices, "pine") == target
 
 
 async def test_a_closed_office_is_not_a_destination_and_is_refused(stores) -> None:
@@ -132,7 +132,7 @@ async def test_a_closed_office_is_not_a_destination_and_is_refused(stores) -> No
     stores.office_admin.set_active("ovest", False)
     notifier = RecordingNotifier()
 
-    assert relay.destinations(stores.offices) == []
+    assert chats.destinations(stores.offices) == []
     with pytest.raises(RelayError, match="закрыт"):
         await deliver(stores, notifier)
     assert notifier.copies == []
@@ -143,7 +143,7 @@ async def test_an_office_without_a_group_is_not_a_destination(stores) -> None:
     stores.roster.set_chat_id("ovest", None)
     notifier = RecordingNotifier()
 
-    assert relay.destinations(stores.offices) == []
+    assert chats.destinations(stores.offices) == []
     with pytest.raises(RelayError):
         await deliver(stores, notifier)
     assert notifier.copies == []

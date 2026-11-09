@@ -20,6 +20,7 @@ from tabelshchik.adapters.db.repositories import (
 from tabelshchik.adapters.fakes import RecordingNotifier, StubChatModel
 from tabelshchik.application.chat import MAX_ANSWER_LENGTH, ChatRefusal, answer
 from tabelshchik.application.policy import ChatPolicy, SchedulePolicy, TempoPolicy
+from tabelshchik.application.ports import PostKind, PostRecord
 from tabelshchik.application.regenerate_schedule import regenerate
 from tabelshchik.application.send_tempo_reminder import (
     TempoKind,
@@ -107,9 +108,11 @@ def test_a_disabled_policy_never_fires() -> None:
 # ------------------------------------------------------------------ the tempo message
 
 
-async def tempo(sessions, clock, notifier=None, *, model=None, posts=None, **kwargs):
+async def tempo(
+    sessions, clock, notifier=None, *, model=None, posts=None, office_id="ovest", **kwargs
+):
     return await send_tempo_reminder(
-        office_id="ovest",
+        office_id=office_id,
         offices=SqlOfficeStore(sessions),
         notifier=notifier or RecordingNotifier(),
         voice=voice(model),
@@ -125,15 +128,18 @@ def generated(text: str) -> StubChatModel:
     return StubChatModel(reply=json.dumps({"text": text}, ensure_ascii=False))
 
 
-async def test_everyone_is_tagged_not_just_those_in_the_office(sessions) -> None:
+async def test_nobody_is_tagged_because_the_pin_reaches_everyone(sessions) -> None:
     seed(sessions)
+    SqlOfficeStore(sessions).link_telegram_user("borya", 4242)
     notifier = RecordingNotifier()
 
     outcome = await tempo(sessions, at(FRIDAY), notifier)
 
-    assert outcome.sent
+    assert outcome.sent and outcome.pinned
     for name in ("Аня", "Боря", "Вера", "Глеб"):
-        assert name in notifier.last_text
+        assert name not in notifier.last_text
+    assert "@" not in notifier.last_text
+    assert "tg://user" not in notifier.last_text
 
 
 async def test_the_tempo_link_is_tappable_text(sessions) -> None:
@@ -258,23 +264,6 @@ async def test_a_failed_model_still_sends_the_reminder(sessions) -> None:
     assert "Tempo" in notifier.last_text
 
 
-async def test_someone_who_has_left_is_not_tagged(sessions) -> None:
-    seed(
-        sessions,
-        office_seed(
-            employees=[
-                {"id": "anya", "name": "Аня"},
-                {"id": "gone", "name": "Ушедший", "endedOn": "2026-01-01"},
-            ]
-        ),
-    )
-    notifier = RecordingNotifier()
-
-    await tempo(sessions, at(FRIDAY), notifier)
-
-    assert "Ушедший" not in notifier.last_text
-
-
 async def test_every_mood_produces_a_tempo_message(sessions) -> None:
     seed(sessions)
     for mood in Mood:
@@ -373,6 +362,104 @@ async def test_a_closed_office_gets_no_tempo_reminder(sessions) -> None:
     outcome = await tempo(sessions, at(FRIDAY))
 
     assert outcome.skipped == "inactive"
+
+
+# ------------------------------------------------------------------- a shared group
+
+
+def two_offices_in_one_chat(sessions, **second) -> None:
+    seed(
+        sessions,
+        office_seed(),
+        office_seed(id="pine", name="Pine", employees=[{"id": "zed", "name": "Зед"}], **second),
+    )
+
+
+async def test_two_offices_in_one_chat_get_one_tempo_message(sessions) -> None:
+    two_offices_in_one_chat(sessions)
+    notifier = RecordingNotifier()
+
+    first = await tempo(sessions, at(FRIDAY), notifier)
+    second = await tempo(sessions, at(FRIDAY), notifier, office_id="pine")
+
+    assert first.sent
+    assert second.skipped == "shared-chat"
+    assert len(notifier.messages) == 1
+
+
+async def test_the_other_office_stands_aside_whichever_job_runs_first(sessions) -> None:
+    two_offices_in_one_chat(sessions)
+    notifier = RecordingNotifier()
+
+    second = await tempo(sessions, at(FRIDAY), notifier, office_id="pine")
+    first = await tempo(sessions, at(FRIDAY), notifier)
+
+    assert second.skipped == "shared-chat"
+    assert first.sent
+    assert len(notifier.messages) == 1
+
+
+async def test_a_shared_chat_gets_no_office_header(sessions) -> None:
+    two_offices_in_one_chat(sessions)
+    notifier = RecordingNotifier()
+
+    await tempo(sessions, at(FRIDAY), notifier)
+
+    assert "🏢" not in notifier.last_text
+    assert "Pine" not in notifier.last_text
+
+
+async def test_every_earlier_tempo_pin_in_the_chat_comes_down_whoever_posted_it(sessions) -> None:
+    two_offices_in_one_chat(sessions)
+    posts = SqlPostStore(sessions)
+    for office_id, day, message_id in (
+        ("ovest", date(2026, 9, 4), 501),
+        ("pine", date(2026, 9, 11), 502),
+    ):
+        posts.record(
+            PostRecord(
+                office_id, PostKind.TEMPO, day, chat_id=CHAT, message_id=message_id, pinned=True
+            ),
+            at=datetime(2026, 9, 11, 18, 0),
+        )
+    notifier = RecordingNotifier()
+
+    await tempo(sessions, at(FRIDAY), notifier)
+
+    assert notifier.pin_calls == [
+        ("unpin", CHAT, 501),
+        ("unpin", CHAT, 502),
+        ("pin", CHAT, notifier.last_message_id),
+    ]
+    assert [post.office_id for post in posts.pinned(PostKind.TEMPO, CHAT)] == ["ovest"]
+
+
+async def test_a_colleague_from_the_other_office_is_still_a_forbidden_name(sessions) -> None:
+    two_offices_in_one_chat(sessions)
+
+    outcome = await tempo(
+        sessions, at(FRIDAY, 17, 50), model=generated("Зед, заполни Tempo."), gap_minutes=10
+    )
+
+    assert not outcome.generated
+    assert "Зед" not in outcome.text
+
+
+async def test_an_office_whose_week_ends_early_still_gets_its_reminder_in_a_shared_chat(
+    sessions,
+) -> None:
+    two_offices_in_one_chat(sessions, calendar={"closed": [FRIDAY.isoformat()]})
+    notifier = RecordingNotifier()
+
+    pine_thursday = await tempo(sessions, at(THURSDAY), notifier, office_id="pine")
+    ovest_thursday = await tempo(sessions, at(THURSDAY), notifier)
+    ovest_friday = await tempo(sessions, at(FRIDAY), notifier)
+
+    assert pine_thursday.sent
+    assert ovest_thursday.skipped == "not-due"
+    assert ovest_friday.sent
+    assert len(notifier.messages) == 2
+    assert notifier.pin_calls[-2][0] == "unpin"
 
 
 # ------------------------------------------------------------------------ chat limits

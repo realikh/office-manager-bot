@@ -48,6 +48,7 @@ from tabelshchik.adapters.telegram.keyboards import (
 from tabelshchik.adapters.telegram.middlewares import AdminOnly
 from tabelshchik.adapters.telegram.ui import redraw, rehome
 from tabelshchik.application import (
+    chats,
     manage_admins,
     manage_limits,
     manage_offices,
@@ -56,6 +57,7 @@ from tabelshchik.application import (
     relay,
 )
 from tabelshchik.application.build_report import ReportDay, build_report
+from tabelshchik.application.chats import Destination
 from tabelshchik.application.context import BotContext
 from tabelshchik.application.manage_admins import AdminError
 from tabelshchik.application.manage_limits import (
@@ -69,7 +71,7 @@ from tabelshchik.application.manage_times import TimeError
 from tabelshchik.application.policy import RUSH_WINDOW_MINUTES
 from tabelshchik.application.ports import ScheduleTime
 from tabelshchik.application.regenerate_schedule import regenerate
-from tabelshchik.application.relay import Destination, Relayed, RelayError
+from tabelshchik.application.relay import Relayed, RelayError
 from tabelshchik.application.send_attendance_reminder import send_attendance_reminder
 from tabelshchik.application.voice import format_date, render_days
 from tabelshchik.config.loader import parse_file
@@ -1627,7 +1629,7 @@ def _relay_key(event: Message | CallbackQuery) -> int:
 
 @router.callback_query(F.data == "adm:relay")
 async def start_relay(query: CallbackQuery, state: FSMContext, services: BotContext) -> None:
-    if not relay.destinations(services.offices):
+    if not chats.destinations(services.offices):
         # Before the prompt rather than after the message: asking for something that has
         # nowhere to go wastes whatever the admin sends next.
         await query.answer(NO_RELAY_TARGETS, show_alert=True)
@@ -1701,7 +1703,7 @@ async def choose_relay_target(
         await _replace(query, *_relay_gone(services, query))
         return
 
-    target = relay.destination_of(services.offices, _tail(query))
+    target = chats.destination_of(services.offices, _tail(query))
     if target is None:
         note = f"❌ {relay.NO_DESTINATION}"
         await _replace(query, *relay_screen(services, count=len(ids), sent=sent, note=note))
@@ -1729,7 +1731,7 @@ async def send_relay(query: CallbackQuery, state: FSMContext, services: BotConte
             return
 
         office_id = _tail(query)
-        target = relay.destination_of(services.offices, office_id)
+        target = chats.destination_of(services.offices, office_id)
         if target is not None and target.chat_id in sent:
             note = f"Уже отправлено в «{html.escape(target.label)}»."
             await _replace(query, *relay_screen(services, count=len(ids), sent=sent, note=note))
@@ -2295,7 +2297,7 @@ def relay_screen(
     draw is simply not offered. The text names where it has gone rather than leaving that
     to the ticks, for the same reason the other headings here carry counts.
     """
-    targets = relay.destinations(services.offices)
+    targets = chats.destinations(services.offices)
     lines = [note, ""] if note else []
     lines.append(f"<b>Куда отправить?</b> Сообщений: {count}.")
 

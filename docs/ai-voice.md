@@ -116,8 +116,8 @@ gets a tagged line with a written title. There is a test that asserts exactly th
 ## Whole messages: Tempo and holidays
 
 `Voice.announce()` asks for one JSON object, `{"text": "…"}`, given the day's persona and a
-brief that the use case writes. The link, the tagged names and the office header are
-added by the code afterwards, and the model is told so. The result goes through
+brief that the use case writes. The link is added by the code afterwards, and the model is
+told so. The result goes through
 `render_announcement`; anything off and the hand-written line is sent instead, with no
 sign that anything happened. `Announcement.generated` records which one it was.
 
@@ -134,9 +134,17 @@ and sends on the last working day of the week, the last working day of the month
   gap it is told not to count anything down, and the written line has no `lastMinutes`
   sentence either.
 
-Then `tempo.footer` (the link as tappable text), then everyone active, tagged. The
-message is pinned after every earlier Tempo pin recorded in `bot_post` for that office and
-chat has been unpinned — pin notifications are what reach the whole chat.
+Then `tempo.footer`, the link as tappable text, and nothing else. Nobody is tagged: the
+message is pinned after every earlier Tempo pin recorded in `bot_post` for that chat has
+been unpinned, whichever office posted it, and the pin notification is what reaches the
+whole chat.
+
+Offices sharing one group get one message. Every office's job fires in the same minute,
+so "has this chat had one today" checked before the model call would let both through.
+Instead each job works out which office speaks for the chat (`chats.speaker`): the first
+office bound to it, by id, for which the message is due today by its own calendar. The
+others return `shared-chat`. An office whose week ends on a Thursday still gets its
+Thursday message, and the speaker's Friday one then takes that pin down.
 
 **Holidays** (`application/send_holiday_greeting.py`) runs every day, asks
 `HolidayCalendar.celebrations()` about today, and greets only the first day of a holiday
@@ -145,7 +153,9 @@ holiday was moved onto are not celebrations and are filtered in the adapter. Rel
 memorial holidays (`SOLEMN_WORDS`) get a brief that forbids irony whatever the mood. The
 model gets the English name, which it understands for any country; the written fallback
 uses the local one. No tags, no pin, and one greeting per chat even when two offices share
-it.
+it: the same speaker rule, with "due" meaning that office's calendar has a new celebration
+today. The greeting covers every office in the chat that celebrates, so a holiday only one
+of them keeps is still greeted.
 
 ## The guards
 

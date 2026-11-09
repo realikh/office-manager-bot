@@ -70,7 +70,7 @@ nothing to register.
 | Path | What belongs there |
 |---|---|
 | `domain/` | Entities, the min-cost-flow solver, the fairness ledger, the calendar, `stable_hash`. Pure. |
-| `application/` | Use cases (`send_attendance_reminder`, `send_tempo_reminder`, `send_holiday_greeting`, `regenerate_schedule`, `manage_absences`, `manage_roster`, `manage_offices`, `manage_admins`, `manage_limits`, `manage_times`, `relay`, `chat`, `memory`, `prune_history`), the `ports.py` Protocols, `ids.py`, `voice.py`. |
+| `application/` | Use cases (`send_attendance_reminder`, `send_tempo_reminder`, `send_holiday_greeting`, `regenerate_schedule`, `manage_absences`, `manage_roster`, `manage_offices`, `manage_admins`, `manage_limits`, `manage_times`, `relay`, `chat`, `memory`, `prune_history`), the `ports.py` Protocols, `chats.py`, `ids.py`, `voice.py`. |
 | `adapters/` | SQLAlchemy repositories, the Telegram routers, the OpenAI client, APScheduler, XLSX, the `holidays` calendar, fakes. |
 | `config/` | Pydantic models for `app.yaml` and `messages.yaml`; `OfficeSeed` for the import command. |
 | `bootstrap/` | The composition root, job registration, lifespan, `mapping.py`. |
@@ -293,8 +293,11 @@ or a `bot_post` row for Tempo and holidays. `app.yaml` refuses the old `time` ke
 
 ### Pins are tracked in `bot_post`, never in memory
 
-The Tempo reminder unpins every earlier Tempo post recorded as pinned for that office and
-chat, *then* pins the new one. The dict on `TelegramNotifier` used to hold this and was
+The Tempo reminder unpins every earlier Tempo post recorded as pinned in that chat,
+whichever office posted it, *then* pins the new one. Offices sharing a group get one Tempo
+message and one holiday greeting, sent by `chats.speaker`: the first office of the chat for
+which it is due today. A check-then-act "already sent here" guard would race, because every
+office's job fires in the same minute. The dict on `TelegramNotifier` used to hold this and was
 empty after every redeploy, so old pins stayed up. `delete_posts_before` keeps any row
 still pinned — it is what next week's reminder needs to find.
 

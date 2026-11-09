@@ -174,8 +174,8 @@ lets you hand it over later and stop being an admin yourself.
 2. **Офисы → ➕ Создать офис**, and send the name. You get an id back.
 3. In the office's Telegram group, send **`/bind`** and pick the office. This is how it
    learns the chat id — that id is shown nowhere in the Telegram interface and cannot be
-   typed from memory. Two offices may share one group; messages then carry an office
-   header so they stay distinguishable.
+   typed from memory. Two offices may share one group: each attendance reminder then
+   carries an office header, and Tempo and holiday greetings go out once for the group.
 4. **Офисы → your office → 👥 Сотрудники → ➕ Добавить** for each person. A Telegram handle
    is optional — anyone can link themselves later with `/start`.
 5. **🪑 Свободные места** for each weekday, and **📌 Фикс. расписание** for anyone who is

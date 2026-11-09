@@ -7,8 +7,10 @@ Victory Day because the bot happened to be in a toxic mood.
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 
@@ -22,7 +24,7 @@ from tabelshchik.adapters.db.repositories import (
 )
 from tabelshchik.adapters.fakes import RecordingNotifier, StubChatModel
 from tabelshchik.adapters.holiday_calendar import PackageHolidayCalendar
-from tabelshchik.application.ports import Celebration
+from tabelshchik.application.ports import Celebration, Completion
 from tabelshchik.application.send_holiday_greeting import send_holiday_greeting
 from tabelshchik.application.voice import MoodPolicy, Voice
 from tabelshchik.bootstrap.mapping import catalog, silent_policy
@@ -159,7 +161,76 @@ async def test_two_offices_in_one_group_greet_it_once(sessions) -> None:
     second = await greet(sessions, WOMENS_DAY, notifier, office_id="second")
 
     assert first.sent
-    assert second.skipped == "chat-already-greeted"
+    assert second.skipped == "shared-chat"
+    assert len(notifier.messages) == 1
+
+
+@dataclass
+class YieldingModel(StubChatModel):
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        json_object: bool = False,
+    ) -> Completion | None:
+        await asyncio.sleep(0)
+        return await super().complete(
+            system, user, max_tokens=max_tokens, temperature=temperature, json_object=json_object
+        )
+
+
+class ByCountry(FakeCalendar):
+    def __init__(self, table: dict[tuple[str, date], list[tuple[str, str]]]) -> None:
+        super().__init__({})
+        self.by_country = table
+
+    def celebrations(self, country: str, day: date) -> Sequence[Celebration]:
+        return [
+            Celebration(day=day, name=name, local_name=local)
+            for name, local in self.by_country.get((country, day), [])
+        ]
+
+
+async def test_a_shared_chat_is_greeted_once_even_when_both_jobs_run_together(sessions) -> None:
+    seed(
+        sessions,
+        office_seed(),
+        office_seed(id="second", name="Second", employees=[{"id": "zed", "name": "Зед"}]),
+    )
+    notifier = RecordingNotifier()
+
+    outcomes = await asyncio.gather(
+        greet(sessions, WOMENS_DAY, notifier, model=YieldingModel()),
+        greet(sessions, WOMENS_DAY, notifier, model=YieldingModel(), office_id="second"),
+    )
+
+    assert sorted(outcome.skipped or "sent" for outcome in outcomes) == ["sent", "shared-chat"]
+    assert len(notifier.messages) == 1
+
+
+async def test_a_holiday_only_one_office_keeps_is_still_greeted_in_a_shared_chat(sessions) -> None:
+    seed(
+        sessions,
+        office_seed(),
+        office_seed(
+            id="second",
+            name="Second",
+            holidayCalendar="RU",
+            employees=[{"id": "zed", "name": "Зед"}],
+        ),
+    )
+    calendar = ByCountry({("RU", ORDINARY): [("Unity Day", "День народного единства")]})
+    notifier = RecordingNotifier()
+
+    first = await greet(sessions, ORDINARY, notifier, calendar=calendar)
+    second = await greet(sessions, ORDINARY, notifier, calendar=calendar, office_id="second")
+
+    assert first.skipped == "not-a-holiday"
+    assert second.sent
+    assert "«День народного единства»" in notifier.last_text
     assert len(notifier.messages) == 1
 
 

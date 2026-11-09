@@ -34,7 +34,7 @@ from tabelshchik.adapters.telegram.routers.admin import (
     roster_screen,
     times_screen,
 )
-from tabelshchik.application import manage_roster, relay
+from tabelshchik.application import chats, manage_roster
 from tabelshchik.application.ids import MAX_ID_LENGTH, MAX_OFFICE_ID_LENGTH
 from tabelshchik.application.manage_times import reminder_times
 from tabelshchik.application.policy import ChatPolicy, ReminderTimes, SchedulePolicy
@@ -434,7 +434,7 @@ def test_every_callback_a_screen_emits_fits_telegram_s_limit(sessions) -> None:
         times_screen(ctx),
         relay_screen(ctx, count=1, sent=()),
     ]
-    target = relay.destination_of(ctx.offices, long_office)
+    target = chats.destination_of(ctx.offices, long_office)
     assert target is not None
     screens.append(relay_confirm_screen(target, count=1))
     for screen in screens:
@@ -543,7 +543,7 @@ def test_a_note_leads_the_picker(ctx) -> None:
 
 
 def test_the_confirmation_names_the_group_and_the_count(ctx) -> None:
-    target = relay.destination_of(ctx.offices, "ovest")
+    target = chats.destination_of(ctx.offices, "ovest")
     assert target is not None
 
     text, markup = relay_confirm_screen(target, count=3)

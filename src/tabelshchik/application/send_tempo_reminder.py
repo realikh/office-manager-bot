@@ -2,17 +2,18 @@
 
 Two occasions and never more than one message a day: the last working day of the week,
 and the last working day of the month. A Friday that also ends the month gets one
-reminder that says both, not two. Neither fires on a non-working day, and every active
-employee is tagged, because unlike the attendance reminder this concerns everyone.
+reminder that says both, not two. Neither fires on a non-working day.
 
 The words are the model's, in the day's mood, with a hand-written line behind them. The
-link, the names and the office header are always ours. When the reminder lands in the
-last half hour of the workday it says how many minutes are left and suggests spending
-exactly those on Tempo; any earlier and a countdown would be silly, so it does not.
+link is always ours. When the reminder lands in the last half hour of the workday it says
+how many minutes are left and suggests spending exactly those on Tempo; any earlier and a
+countdown would be silly, so it does not.
 
-The message is pinned, and the previous one unpinned first — the pin is what notifies the
-whole chat. Both facts live in the database. They used to live in a dict on the notifier,
-which forgot the old pin on every redeploy and left the chat collecting them.
+Nobody is tagged. The message is pinned, and the previous one unpinned first, and the pin
+is what notifies the whole chat. Offices sharing one group get one message, from the
+first of them for which it is due today. Pins live in the database. They used to live in
+a dict on the notifier, which forgot the old pin on every redeploy and left the chat
+collecting them.
 """
 
 from __future__ import annotations
@@ -23,6 +24,7 @@ from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from enum import StrEnum
 
+from tabelshchik.application.chats import Destination, destination_of, speaker
 from tabelshchik.application.policy import SilentPolicy, TempoPolicy
 from tabelshchik.application.ports import (
     Clock,
@@ -36,8 +38,6 @@ from tabelshchik.application.voice import (
     Catalog,
     CommonText,
     Voice,
-    mention,
-    office_header,
     plural_minutes,
 )
 from tabelshchik.domain.calendar import (
@@ -46,7 +46,7 @@ from tabelshchik.domain.calendar import (
     last_working_day_of_month,
     last_working_day_of_week,
 )
-from tabelshchik.domain.entities import FRIDAY
+from tabelshchik.domain.entities import FRIDAY, Office
 from tabelshchik.domain.mood import Mood
 
 logger = logging.getLogger(__name__)
@@ -84,13 +84,6 @@ class TempoOutcome:
     #: Whether the model wrote the words, as opposed to the hand-written fallback.
     generated: bool = False
     skipped: str | None = None
-
-
-def _chat_is_shared(offices: OfficeStore, chat_id: int | None) -> bool:
-    """Whether more than one office posts into this chat."""
-    if chat_id is None:
-        return False
-    return sum(1 for o in offices.active_offices() if o.chat_id == chat_id) > 1
 
 
 def tempo_occasion(spec: CalendarSpec, today: date, policy: TempoPolicy) -> TempoOccasion | None:
@@ -132,19 +125,34 @@ async def send_tempo_reminder(
         return TempoOutcome(office_id, skipped="inactive")
 
     today = clock.today()
-    context = offices.planning_context(office_id, start=today, end=today + timedelta(days=40))
+    horizon = today + timedelta(days=40)
+    context = offices.planning_context(office_id, start=today, end=horizon)
 
     resolved = occasion or tempo_occasion(context.spec, today, policy)
     if resolved is None:
         return TempoOutcome(office_id, skipped="not-due")
 
-    # Moving the reminder's time after it fired gives today a second occurrence that the
-    # job ledger has never seen. This is what keeps that to one message.
+    destination = destination_of(offices, office_id)
     recording = not dry_run and chat_id is None
-    if recording and posts.sent(office_id, PostKind.TEMPO, today):
-        return TempoOutcome(office_id, resolved.kind, skipped="already-sent")
+    if recording:
+        if destination is None:
+            return TempoOutcome(office_id, resolved.kind, skipped="no-chat")
+        if not _speaks_for(destination, office_id, offices, today, horizon, policy):
+            return TempoOutcome(office_id, resolved.kind, skipped="shared-chat")
+        # Moving the reminder's time after it fired gives today a second occurrence that the
+        # job ledger has never seen. This is what keeps that to one message.
+        if posts.sent(office_id, PostKind.TEMPO, today) or posts.sent_to_chat(
+            destination.chat_id, PostKind.TEMPO, today
+        ):
+            return TempoOutcome(office_id, resolved.kind, skipped="already-sent")
 
-    roster = [employee for employee in offices.employees(office_id) if employee.in_tenure(today)]
+    members = destination.offices if destination is not None else (context.office,)
+    roster = [
+        employee
+        for member in members
+        for employee in offices.employees(member.id)
+        if employee.in_tenure(today)
+    ]
     if not roster:
         return TempoOutcome(office_id, resolved.kind, skipped="no-employees")
 
@@ -162,24 +170,8 @@ async def send_tempo_reminder(
         allow_numbers=(gap_minutes,) if gap_minutes else (),
     )
 
-    parts = [announcement.text]
     footer = tempo_footer(voice.catalog, policy.url or voice.catalog.text("tempo.url"))
-    if footer:
-        parts.append(footer)
-    parts.append(
-        " ".join(
-            mention(
-                employee.full_name,
-                telegram_user_id=employee.telegram_user_id,
-                username=employee.telegram_username,
-            )
-            for employee in roster
-        )
-    )
-    text = "\n\n".join(parts)
-    if _chat_is_shared(offices, context.office.chat_id):
-        header = office_header(context.office.name, common)
-        text = f"{header}\n\n{text}"
+    text = "\n\n".join(part for part in (announcement.text, footer) if part)
 
     kind = resolved.kind
     generated = announcement.generated
@@ -187,11 +179,11 @@ async def send_tempo_reminder(
     if dry_run:
         return TempoOutcome(office_id, kind, text=text, silent=silent, generated=generated)
 
-    destination = chat_id if chat_id is not None else context.office.chat_id
-    if destination is None:
+    target = chat_id if chat_id is not None else (destination.chat_id if destination else None)
+    if target is None:
         return TempoOutcome(office_id, kind, text=text, generated=generated, skipped="no-chat")
 
-    sent = await notifier.send(destination, text, silent=silent)
+    sent = await notifier.send(target, text, silent=silent)
     if sent is None:
         return TempoOutcome(office_id, kind, text=text, generated=generated, skipped="send-failed")
 
@@ -203,29 +195,48 @@ async def send_tempo_reminder(
 
     pinned = False
     if policy.pin:
-        # Unpin first, then pin. Every earlier reminder still recorded as pinned is taken
-        # down, not just the last one. A failed unpin is still marked done: it almost
-        # always means somebody unpinned it by hand, and retrying weekly would not help.
-        for previous in posts.pinned(office_id, PostKind.TEMPO, destination):
+        # Unpin first, then pin. Every earlier reminder in this chat still recorded as
+        # pinned is taken down, whichever office posted it, not just the last one. A failed
+        # unpin is still marked done: it almost always means somebody unpinned it by hand,
+        # and retrying weekly would not help.
+        for previous in posts.pinned(PostKind.TEMPO, target):
             if not await notifier.unpin(previous.chat_id, previous.message_id):
                 logger.warning(
-                    "tempo pin from %s in chat %s was already gone", previous.day, destination
+                    "tempo pin from %s in chat %s was already gone", previous.day, target
                 )
-            posts.mark_unpinned(office_id, PostKind.TEMPO, previous.day, at=clock.now())
-        pinned = await notifier.pin(destination, sent.message_id, silent=silent)
+            posts.mark_unpinned(previous.office_id, PostKind.TEMPO, previous.day, at=clock.now())
+        pinned = await notifier.pin(target, sent.message_id, silent=silent)
 
     posts.record(
         PostRecord(
             office_id=office_id,
             kind=PostKind.TEMPO,
             day=today,
-            chat_id=destination,
+            chat_id=target,
             message_id=sent.message_id,
             pinned=pinned,
         ),
         at=clock.now(),
     )
     return replace(outcome, pinned=pinned)
+
+
+def _speaks_for(
+    destination: Destination,
+    office_id: str,
+    offices: OfficeStore,
+    today: date,
+    horizon: date,
+    policy: TempoPolicy,
+) -> bool:
+    def due(office: Office) -> bool:
+        if office.id == office_id:
+            return True
+        spec = offices.planning_context(office.id, start=today, end=horizon).spec
+        return tempo_occasion(spec, today, policy) is not None
+
+    first = speaker(destination, due)
+    return first is not None and first.id == office_id
 
 
 def tempo_footer(catalog: Catalog, url: str) -> str:
