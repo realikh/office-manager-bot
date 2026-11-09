@@ -69,6 +69,15 @@ that got the reminder twice, once per office, each copy tagging everybody;
 `test_an_answer_cut_off_by_the_token_ceiling_is_recovered_not_sent_as_json` covers a chat
 reply that ran out of tokens mid-JSON.
 
+**`tests/integration/test_chat_context.py`** — what the chat carries and looks up.
+`test_somebody_elses_personal_notes_are_never_recalled` and
+`test_somebody_off_the_roster_cannot_write_into_an_office` are the privacy half;
+`test_every_tool_call_gets_an_answer_even_past_the_cap` is what keeps the OpenAI API from
+refusing a conversation; `test_the_question_itself_is_not_quoted_back` and
+`test_a_message_that_arrived_while_answering_is_not_in_view` keep the transcript honest.
+`tests/integration/test_note_migration.py` upgrades a database that still has the old
+`chat_memory` table and checks the facts arrive as notes.
+
 **`tests/integration/test_holiday_greeting.py`** — one greeting per holiday, per chat, per
 day, and none on a transferred day off.
 `test_a_shared_chat_is_greeted_once_even_when_both_jobs_run_together` runs both offices'

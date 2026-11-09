@@ -8,7 +8,7 @@ a network or a clock, and what makes the storage and messaging choices replaceab
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, time
 from enum import StrEnum
@@ -335,7 +335,7 @@ class MaintenanceStore(Protocol):
     def delete_audit_before(self, cutoff: datetime) -> int: ...
     def delete_ai_usage_before(self, cutoff: date) -> int: ...
     def delete_chat_messages_before(self, cutoff: datetime) -> int: ...
-    def delete_chat_memory_before(self, cutoff: datetime) -> int: ...
+    def delete_stale_notes(self, *, untouched_since: datetime, today: date) -> int: ...
     def delete_absences_before(self, cutoff: date) -> int: ...
     #: Only posts that are no longer pinned: the current pin is what the next reminder
     #: has to find in order to take it down.
@@ -494,6 +494,47 @@ class Completion:
         return self.prompt_tokens + self.completion_tokens
 
 
+@dataclass(frozen=True, slots=True)
+class ToolSpec:
+    name: str
+    description: str
+    parameters: Mapping[str, object]
+
+
+@dataclass(frozen=True, slots=True)
+class ToolCall:
+    id: str
+    name: str
+    arguments: str
+
+
+class Role(StrEnum):
+    SYSTEM = "system"
+    USER = "user"
+    ASSISTANT = "assistant"
+    TOOL = "tool"
+
+
+@dataclass(frozen=True, slots=True)
+class ChatTurn:
+    role: Role
+    content: str | None = None
+    tool_calls: tuple[ToolCall, ...] = ()
+    tool_call_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ModelTurn:
+    text: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+
+    @property
+    def total_tokens(self) -> int:
+        return self.prompt_tokens + self.completion_tokens
+
+
 class ChatModel(Protocol):
     async def complete(
         self,
@@ -506,6 +547,17 @@ class ChatModel(Protocol):
     ) -> Completion | None:
         """Returns None rather than raising — every caller has a working fallback."""
         ...
+
+    async def converse(
+        self,
+        turns: Sequence[ChatTurn],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        allow_tools: bool = True,
+        max_tokens: int,
+        temperature: float,
+        json_object: bool = False,
+    ) -> ModelTurn | None: ...
 
 
 class UsageStore(Protocol):
@@ -525,6 +577,7 @@ class CachedMessage:
     author: str
     text: str
     reply_to_message_id: int | None = None
+    at: datetime | None = None
 
 
 class MessageCache(Protocol):
@@ -541,27 +594,45 @@ class MessageCache(Protocol):
         missing. Stops early at the first link that was never cached."""
         ...
 
+    def recent(self, chat_id: int, *, before: int, limit: int) -> Sequence[CachedMessage]: ...
+
+    def get(self, chat_id: int, message_ids: Sequence[int]) -> Mapping[int, CachedMessage]: ...
+
+
+class NoteScope(StrEnum):
+    PERSON = "person"
+    OFFICE = "office"
+
 
 @dataclass(frozen=True, slots=True)
-class MemoryFact:
-    scope: str
+class Note:
+    id: int
+    scope: NoteScope
     subject: str
-    fact: str
+    topic: str
+    text: str
+    updated_at: datetime
+    until: date | None = None
 
 
-class ChatMemoryStore(Protocol):
-    """What the bot has chosen to remember, as short facts in two scopes.
+class NoteStore(Protocol):
+    def notes(self, scope: NoteScope, subject: str, *, limit: int) -> Sequence[Note]: ...
 
-    ``office`` facts are shared; ``employee`` facts are shown only to the person they are
-    about. Both are ring buffers — remembering something new is what forgets something
-    old, so the prompt has a fixed maximum size.
-    """
+    def write(
+        self,
+        scope: NoteScope,
+        subject: str,
+        topic: str,
+        text: str,
+        *,
+        until: date | None,
+        keep: int,
+        at: datetime,
+    ) -> None: ...
 
-    def facts(self, scope: str, subject: str, *, limit: int) -> Sequence[MemoryFact]: ...
+    def forget(self, scope: NoteScope, subject: str, topic: str) -> bool: ...
 
-    def remember(self, scope: str, subject: str, fact: str, *, keep: int, at: datetime) -> None: ...
-
-    def forget_all(self, scope: str, subject: str) -> int: ...
+    def touch(self, note_ids: Sequence[int], *, at: datetime) -> None: ...
 
 
 class MoodStore(Protocol):

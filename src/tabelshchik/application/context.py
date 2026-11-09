@@ -25,13 +25,13 @@ from tabelshchik.application.ports import (
     AbsenceStore,
     AdminStore,
     AuditLog,
-    ChatMemoryStore,
     Clock,
     HolidayCalendar,
     JobLedger,
     LedgerStore,
     MaintenanceStore,
     MessageCache,
+    NoteStore,
     Notifier,
     OfficeAdminStore,
     OfficeJobs,
@@ -69,7 +69,7 @@ class BotContext(Protocol):
     roster: RosterStore
     usage: UsageStore
     messages_cache: MessageCache
-    memories: ChatMemoryStore
+    notes: NoteStore
     jobs: JobLedger
     audit: AuditLog
     maintenance: MaintenanceStore

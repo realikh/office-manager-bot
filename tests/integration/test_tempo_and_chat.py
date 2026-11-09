@@ -17,10 +17,11 @@ from tabelshchik.adapters.db.repositories import (
     SqlScheduleStore,
     SqlUsageStore,
 )
-from tabelshchik.adapters.fakes import RecordingNotifier, StubChatModel
+from tabelshchik.adapters.fakes import RecordingNotifier, ScriptedChatModel, StubChatModel
+from tabelshchik.application import chat_tools
 from tabelshchik.application.chat import MAX_ANSWER_LENGTH, ChatRefusal, answer
 from tabelshchik.application.policy import ChatPolicy, SchedulePolicy, TempoPolicy
-from tabelshchik.application.ports import PostKind, PostRecord
+from tabelshchik.application.ports import ModelTurn, PostKind, PostRecord, Role, ToolCall
 from tabelshchik.application.regenerate_schedule import regenerate
 from tabelshchik.application.send_tempo_reminder import (
     TempoKind,
@@ -544,7 +545,7 @@ async def test_an_empty_question_is_ignored(sessions) -> None:
 # ----------------------------------------------------------------------- grounding
 
 
-async def test_the_model_is_told_the_askers_own_days(sessions) -> None:
+async def test_the_asker_finds_their_own_days_by_looking_them_up(sessions) -> None:
     seed(sessions, office_seed(schedule={"vacantDesks": {"tuesday": 4}}))
     regenerate(
         office_id="ovest",
@@ -555,22 +556,35 @@ async def test_the_model_is_told_the_askers_own_days(sessions) -> None:
         policy=SchedulePolicy(horizon_weeks=2, freeze_weeks=0),
     )
     SqlOfficeStore(sessions).link_telegram_user("anya", 42)
-    model = StubChatModel(reply="ок")
+    model = ScriptedChatModel(
+        [
+            ModelTurn(tool_calls=(ToolCall(id="c1", name=chat_tools.SCHEDULE, arguments="{}"),)),
+            ModelTurn(text=json.dumps({"reply": "Во вторник."}, ensure_ascii=False)),
+        ]
+    )
 
-    await ask(sessions, model=model)
+    reply = await ask(sessions, model=model)
 
-    prompt = model.prompts[0][1]
-    assert "Ближайшие дни" in prompt
-    assert "сентября" in prompt
+    assert reply.text == "Во вторник."
+    [schedule] = [turn.content or "" for turn in model.calls[1][0] if turn.role is Role.TOOL]
+    assert "Дни собеседника: вт 15 сентября" in schedule
 
 
-async def test_someone_unknown_gets_an_answer_without_personal_grounding(sessions) -> None:
+async def test_someone_unknown_is_shown_the_office_but_has_no_days_of_their_own(
+    sessions,
+) -> None:
     seed(sessions)
-    model = StubChatModel(reply="ок")
+    model = ScriptedChatModel(
+        [
+            ModelTurn(tool_calls=(ToolCall(id="c1", name=chat_tools.SCHEDULE, arguments="{}"),)),
+            ModelTurn(text=json.dumps({"reply": "ок"}, ensure_ascii=False)),
+        ]
+    )
 
     await ask(sessions, model=model, user_id=999999)
 
-    assert "Ближайшие дни" not in model.prompts[0][1]
+    [schedule] = [turn.content or "" for turn in model.calls[1][0] if turn.role is Role.TOOL]
+    assert "Дни собеседника" not in schedule
 
 
 async def test_model_output_is_escaped_before_sending(sessions) -> None:

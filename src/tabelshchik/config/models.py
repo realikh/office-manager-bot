@@ -150,10 +150,9 @@ class RetentionSection(Base):
     #: back more than a few days. Keeping them longer stores other people's conversation
     #: for no benefit.
     chat_messages_days: int = Field(default=7, ge=1, le=90)
-    #: Remembered facts are bounded by count already (a ring buffer per scope), but not by
-    #: age. Holding something the bot learned about a person indefinitely is not a thing
-    #: to do by omission.
-    chat_memory_days: int = Field(default=90, ge=1, le=730)
+    #: Notes are bounded by count already, but not by age. Holding something the bot
+    #: learned about a person indefinitely is not a thing to do by omission.
+    memory_idle_days: int = Field(default=365, ge=1, le=3650)
 
 
 class MoodWeight(Base):
@@ -185,6 +184,23 @@ class PersonalitySection(Base):
         return self
 
 
+class HistorySection(Base):
+    messages: int = Field(default=60, ge=0, le=200)
+    chars: int = Field(default=6000, ge=0, le=20000)
+    message_chars: int = Field(default=1000, ge=40, le=4000)
+    #: How far back a reply chain is followed. Telegram only ever hands us one level, so
+    #: the rest is reconstructed from the message cache.
+    reply_depth: int = Field(default=10, ge=0, le=25)
+
+
+class MemorySection(Base):
+    enabled: bool = True
+    personal_notes: int = Field(default=30, ge=0, le=200)
+    office_notes: int = Field(default=60, ge=0, le=500)
+    note_chars: int = Field(default=200, ge=20, le=500)
+    notes_per_reply: int = Field(default=3, ge=0, le=10)
+
+
 class ChatContextSection(Base):
     """How much conversation the chat carries, and what it is allowed to remember.
 
@@ -194,19 +210,10 @@ class ChatContextSection(Base):
     week cannot quietly multiply the bill.
     """
 
-    #: How far back a reply chain is followed. Telegram only ever hands us one level, so
-    #: the rest is reconstructed from the message cache.
-    reply_depth: int = Field(default=10, ge=0, le=25)
-    #: Ceiling on the whole quoted chain.
-    reply_chars: int = Field(default=1200, ge=0, le=8000)
-    #: Ceiling on any single quoted message within it.
-    message_chars: int = Field(default=200, ge=40, le=1000)
-    #: Whether the model may write things down at all.
-    remember: bool = True
-    #: Ring-buffer sizes. Oldest fact is evicted when a new one arrives.
-    general_facts: int = Field(default=20, ge=0, le=100)
-    personal_facts: int = Field(default=10, ge=0, le=50)
-    fact_chars: int = Field(default=120, ge=20, le=500)
+    history: HistorySection = HistorySection()
+    memory: MemorySection = MemorySection()
+    tool_rounds: int = Field(default=2, ge=0, le=4)
+    lookup_chars: int = Field(default=8000, ge=500, le=30000)
     #: Ceiling on one chat reply. Separate from `ai.maxTokens`, which bounds the short
     #: things the reminders ask for: an answer that explains something needs far more
     #: room than a flavour clause, and a reply cut off mid-JSON is lost entirely.

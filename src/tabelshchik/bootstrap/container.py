@@ -25,12 +25,12 @@ from tabelshchik.adapters.db.repositories import (
     SqlAbsenceStore,
     SqlAdminStore,
     SqlAuditLog,
-    SqlChatMemoryStore,
     SqlJobLedger,
     SqlLedgerStore,
     SqlMaintenance,
     SqlMessageCache,
     SqlMoodStore,
+    SqlNoteStore,
     SqlOfficeAdminStore,
     SqlOfficeStore,
     SqlPostStore,
@@ -55,7 +55,6 @@ from tabelshchik.application.ports import (
     AdminRole,
     AdminStore,
     AuditLog,
-    ChatMemoryStore,
     ChatModel,
     Clock,
     HolidayCalendar,
@@ -64,6 +63,7 @@ from tabelshchik.application.ports import (
     MaintenanceStore,
     MessageCache,
     MoodStore,
+    NoteStore,
     Notifier,
     OfficeAdminStore,
     OfficeJobs,
@@ -125,7 +125,7 @@ class Services:
     roster: RosterStore = field(init=False)
     usage: UsageStore = field(init=False)
     messages_cache: MessageCache = field(init=False)
-    memories: ChatMemoryStore = field(init=False)
+    notes: NoteStore = field(init=False)
     moods: MoodStore = field(init=False)
     posts: PostStore = field(init=False)
     jobs: JobLedger = field(init=False)
@@ -143,7 +143,7 @@ class Services:
         self.roster = SqlRosterStore(self.sessions)
         self.usage = SqlUsageStore(self.sessions)
         self.messages_cache = SqlMessageCache(self.sessions)
-        self.memories = SqlChatMemoryStore(self.sessions)
+        self.notes = SqlNoteStore(self.sessions)
         self.moods = SqlMoodStore(self.sessions)
         self.posts = SqlPostStore(self.sessions)
         self.jobs = SqlJobLedger(self.sessions)
@@ -177,7 +177,7 @@ class Services:
             audit_days=section.audit_days,
             ai_usage_days=section.ai_usage_days,
             chat_messages_days=section.chat_messages_days,
-            chat_memory_days=section.chat_memory_days,
+            memory_idle_days=section.memory_idle_days,
         )
 
     @property
@@ -205,13 +205,17 @@ class Services:
             max_tokens=section.chat.max_tokens,
             temperature=section.temperature,
             triggers=frozenset(section.triggers),
-            reply_depth=section.chat.reply_depth,
-            reply_chars=section.chat.reply_chars,
-            message_chars=section.chat.message_chars,
-            remember=section.chat.remember,
-            general_facts=section.chat.general_facts,
-            personal_facts=section.chat.personal_facts,
-            fact_chars=section.chat.fact_chars,
+            history_messages=section.chat.history.messages,
+            history_chars=section.chat.history.chars,
+            message_chars=section.chat.history.message_chars,
+            reply_depth=section.chat.history.reply_depth,
+            tool_rounds=section.chat.tool_rounds,
+            lookup_chars=section.chat.lookup_chars,
+            memory=section.chat.memory.enabled,
+            personal_notes=section.chat.memory.personal_notes,
+            office_notes=section.chat.memory.office_notes,
+            note_chars=section.chat.memory.note_chars,
+            notes_per_reply=section.chat.memory.notes_per_reply,
         )
 
     @property

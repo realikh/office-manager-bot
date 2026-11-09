@@ -6,10 +6,10 @@ SQLite file and removes a whole class of bug where a session outlives an ``await
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import date, datetime, time
 
-from sqlalchemy import delete, select, text
+from sqlalchemy import delete, or_, select, text, update
 from sqlalchemy.orm import Session, sessionmaker
 
 from tabelshchik.adapters.db import models
@@ -20,7 +20,8 @@ from tabelshchik.application.ports import (
     AdminRole,
     CachedMessage,
     DaySnapshot,
-    MemoryFact,
+    Note,
+    NoteScope,
     PlanningContext,
     PostKind,
     PostRecord,
@@ -753,10 +754,17 @@ class SqlMaintenance(SqlRepository):
                 session.execute(delete(models.ChatMessage).where(models.ChatMessage.at < cutoff))
             )
 
-    def delete_chat_memory_before(self, cutoff: datetime) -> int:
+    def delete_stale_notes(self, *, untouched_since: datetime, today: date) -> int:
         with session_scope(self._sessions) as session:
             return _rows_affected(
-                session.execute(delete(models.ChatMemory).where(models.ChatMemory.at < cutoff))
+                session.execute(
+                    delete(models.MemoryNote).where(
+                        or_(
+                            models.MemoryNote.touched_at < untouched_since,
+                            models.MemoryNote.until < today,
+                        )
+                    )
+                )
             )
 
     def delete_absences_before(self, cutoff: date) -> int:
@@ -888,67 +896,146 @@ class SqlMessageCache(SqlRepository):
                 row = session.get(models.ChatMessage, (chat_id, current))
                 if row is None:
                     break
-                collected.append(
-                    CachedMessage(
-                        message_id=row.message_id,
-                        author=row.author,
-                        text=row.text,
-                        reply_to_message_id=row.reply_to_message_id,
-                    )
-                )
+                collected.append(_to_cached(row))
                 current = row.reply_to_message_id
 
         collected.reverse()  # oldest first: the thread reads in the order it happened
         return collected
 
-
-class SqlChatMemoryStore(SqlRepository):
-    """Short facts the bot asked to keep, as a ring buffer per scope.
-
-    Writing a new fact is what evicts the oldest one. That is the whole retention policy:
-    a bounded number of rows means a bounded prompt, and a bounded prompt means a bill
-    that cannot creep.
-    """
-
-    def facts(self, scope: str, subject: str, *, limit: int) -> Sequence[MemoryFact]:
+    def recent(self, chat_id: int, *, before: int, limit: int) -> Sequence[CachedMessage]:
         if limit <= 0:
             return []
         with session_scope(self._sessions) as session:
             rows = session.scalars(
-                select(models.ChatMemory)
-                .where(models.ChatMemory.scope == scope, models.ChatMemory.subject == subject)
-                .order_by(models.ChatMemory.id.desc())
+                select(models.ChatMessage)
+                .where(models.ChatMessage.chat_id == chat_id)
+                .where(models.ChatMessage.message_id < before)
+                .order_by(models.ChatMessage.message_id.desc())
                 .limit(limit)
             ).all()
-            # Newest first out of the database, oldest first to the caller, so the most
-            # recent thing the bot was told reads last and nearest to the question.
+            return [_to_cached(row) for row in reversed(rows)]
+
+    def get(self, chat_id: int, message_ids: Sequence[int]) -> Mapping[int, CachedMessage]:
+        if not message_ids:
+            return {}
+        with session_scope(self._sessions) as session:
+            rows = session.scalars(
+                select(models.ChatMessage)
+                .where(models.ChatMessage.chat_id == chat_id)
+                .where(models.ChatMessage.message_id.in_(list(message_ids)))
+            ).all()
+            return {row.message_id: _to_cached(row) for row in rows}
+
+
+def _to_cached(row: models.ChatMessage) -> CachedMessage:
+    return CachedMessage(
+        message_id=row.message_id,
+        author=row.author,
+        text=row.text,
+        reply_to_message_id=row.reply_to_message_id,
+        at=row.at,
+    )
+
+
+class SqlNoteStore(SqlRepository):
+    def notes(self, scope: NoteScope, subject: str, *, limit: int) -> Sequence[Note]:
+        if limit <= 0:
+            return []
+        with session_scope(self._sessions) as session:
+            rows = session.scalars(
+                select(models.MemoryNote)
+                .where(models.MemoryNote.scope == scope, models.MemoryNote.subject == subject)
+                .order_by(models.MemoryNote.updated_at.desc(), models.MemoryNote.id.desc())
+                .limit(limit)
+            ).all()
             return [
-                MemoryFact(scope=row.scope, subject=row.subject, fact=row.fact)
-                for row in reversed(rows)
+                Note(
+                    id=row.id,
+                    scope=row.scope,
+                    subject=row.subject,
+                    topic=row.topic,
+                    text=row.text,
+                    updated_at=row.updated_at,
+                    until=row.until,
+                )
+                for row in rows
             ]
 
-    def remember(self, scope: str, subject: str, fact: str, *, keep: int, at: datetime) -> None:
+    def write(
+        self,
+        scope: NoteScope,
+        subject: str,
+        topic: str,
+        text: str,
+        *,
+        until: date | None,
+        keep: int,
+        at: datetime,
+    ) -> None:
         with session_scope(self._sessions) as session:
-            session.add(models.ChatMemory(scope=scope, subject=subject, fact=fact, at=at))
+            row = session.scalars(
+                select(models.MemoryNote).where(
+                    models.MemoryNote.scope == scope,
+                    models.MemoryNote.subject == subject,
+                    models.MemoryNote.topic == topic,
+                )
+            ).first()
+            if row is None:
+                session.add(
+                    models.MemoryNote(
+                        scope=scope,
+                        subject=subject,
+                        topic=topic,
+                        text=text,
+                        until=until,
+                        created_at=at,
+                        updated_at=at,
+                        touched_at=at,
+                    )
+                )
+            else:
+                row.text = text
+                row.until = until
+                row.updated_at = at
+                row.touched_at = at
             session.flush()
 
             surplus = session.scalars(
-                select(models.ChatMemory.id)
-                .where(models.ChatMemory.scope == scope, models.ChatMemory.subject == subject)
-                .order_by(models.ChatMemory.id.desc())
+                select(models.MemoryNote.id)
+                .where(models.MemoryNote.scope == scope, models.MemoryNote.subject == subject)
+                .order_by(
+                    models.MemoryNote.touched_at.desc(),
+                    models.MemoryNote.updated_at.desc(),
+                    models.MemoryNote.id.desc(),
+                )
                 .offset(max(keep, 0))
             ).all()
             if surplus:
-                session.execute(delete(models.ChatMemory).where(models.ChatMemory.id.in_(surplus)))
+                session.execute(delete(models.MemoryNote).where(models.MemoryNote.id.in_(surplus)))
 
-    def forget_all(self, scope: str, subject: str) -> int:
+    def forget(self, scope: NoteScope, subject: str, topic: str) -> bool:
         with session_scope(self._sessions) as session:
-            return _rows_affected(
-                session.execute(
-                    delete(models.ChatMemory).where(
-                        models.ChatMemory.scope == scope, models.ChatMemory.subject == subject
+            return (
+                _rows_affected(
+                    session.execute(
+                        delete(models.MemoryNote).where(
+                            models.MemoryNote.scope == scope,
+                            models.MemoryNote.subject == subject,
+                            models.MemoryNote.topic == topic,
+                        )
                     )
                 )
+                > 0
+            )
+
+    def touch(self, note_ids: Sequence[int], *, at: datetime) -> None:
+        if not note_ids:
+            return
+        with session_scope(self._sessions) as session:
+            session.execute(
+                update(models.MemoryNote)
+                .where(models.MemoryNote.id.in_(list(note_ids)))
+                .values(touched_at=at)
             )
 
 
@@ -1330,6 +1417,12 @@ class SqlOfficeAdminStore(SqlRepository):
             row = session.get(models.Office, office_id)
             if row is None:
                 return False
+            session.execute(
+                delete(models.MemoryNote).where(
+                    models.MemoryNote.scope == NoteScope.OFFICE,
+                    models.MemoryNote.subject == office_id,
+                )
+            )
             session.delete(row)
             return True
 

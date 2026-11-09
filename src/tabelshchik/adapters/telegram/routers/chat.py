@@ -12,11 +12,14 @@ question is attached to.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
-from aiogram import F, Router
+from aiogram import Bot, F, Router
 from aiogram.enums import ChatType
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import Message
+from aiogram.utils.chat_action import ChatActionSender
 
 from tabelshchik.adapters.telegram.notifier import split_message
 from tabelshchik.adapters.telegram.routers.common import UNKNOWN
@@ -30,8 +33,8 @@ logger = logging.getLogger(__name__)
 router = Router(name="chat")
 
 
-@router.message(F.text)
-async def talk(message: Message, services: BotContext) -> None:
+@router.message(F.text | F.caption)
+async def talk(message: Message, services: BotContext, bot: Bot) -> None:
     if message.from_user is None or message.from_user.is_bot:
         return
 
@@ -70,32 +73,39 @@ async def talk(message: Message, services: BotContext) -> None:
         )
 
     trigger = _trigger_for(message, services)
-    if trigger is None or trigger not in services.chat_policy.triggers:
+    if trigger is None or trigger not in services.chat_policy.triggers or not message.text:
         return
 
-    reply = await answer(
-        question=_strip_mention(message, services),
-        user_id=message.from_user.id,
-        office_id=grant.office_id,
-        offices=services.offices,
-        schedule=services.schedule,
-        usage=services.usage,
-        voice=services.voice,
-        clock=services.clock,
-        policy=services.chat_policy,
-        thread=Thread(
-            chat_id=message.chat.id,
-            # The parent, not this message: the question itself is passed separately, and
-            # quoting it back to the model would just pay for it twice.
-            reply_to_message_id=(
-                message.reply_to_message.message_id
-                if message.reply_to_message is not None
-                else None
+    async with ChatActionSender.typing(chat_id=message.chat.id, bot=bot):
+        reply = await answer(
+            question=_strip_mention(message, services),
+            user_id=message.from_user.id,
+            office_id=grant.office_id,
+            offices=services.offices,
+            schedule=services.schedule,
+            usage=services.usage,
+            voice=services.voice,
+            clock=services.clock,
+            policy=services.chat_policy,
+            thread=Thread(
+                chat_id=message.chat.id,
+                # The parent, not this message: the question itself is passed separately,
+                # and quoting it back to the model would just pay for it twice.
+                reply_to_message_id=(
+                    message.reply_to_message.message_id
+                    if message.reply_to_message is not None
+                    else None
+                ),
+                message_id=message.message_id,
+                is_private=is_private,
             ),
-        ),
-        messages=services.messages_cache,
-        memories=services.memories,
-    )
+            messages=services.messages_cache,
+            notes=services.notes,
+            reach=grant.offices,
+            asker_name=_display_name(message),
+        )
+    if reply.lookups:
+        logger.info("chat in %s looked up %s", message.chat.id, ", ".join(reply.lookups))
     if not reply.text:
         return
 
@@ -141,8 +151,14 @@ def _remember(
                 )
             ),
         ),
-        at=services.clock.now(),
+        at=_local(message.date, services),
     )
+
+
+def _local(moment: datetime, services: BotContext) -> datetime:
+    if moment.tzinfo is None:
+        return moment
+    return moment.astimezone(ZoneInfo(services.app_timezone)).replace(tzinfo=None)
 
 
 def _display_name(message: Message) -> str:

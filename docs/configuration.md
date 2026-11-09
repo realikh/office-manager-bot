@@ -202,9 +202,9 @@ validators will refuse to boot otherwise.
 | `reminders.attendance` | `runOn`, `pin`. Listing `sun` is what covers Sun→Monday; Mon→Tue and Fri→Mon fall out of the one rule. The time is set from `/admin`. |
 | `silentHours` | Per weekday with a `default`. Silent still *sends* — it just does not buzz. A window may cross midnight. |
 | `schedule` | `horizonWeeks` generated, `freezeWeeks` immutable (must be smaller, validated), `maxDaysPerWeek`, `absencePolicy`, `surplusClamp`. When the extender runs is set from `/admin`. |
-| `retention` | `scheduleMonths` 3, `jobRunsDays`, `auditDays`, `aiUsageDays`, `chatMessagesDays`. |
+| `retention` | `scheduleMonths` 3, `jobRunsDays`, `auditDays`, `aiUsageDays`, `chatMessagesDays`, `memoryIdleDays` (a saved note nobody wrote or looked up for this long is dropped). |
 | `personality` | `moods` weights, `safeMode`, `bannedTerms`. |
-| `ai` | Model, reasoning effort, sampling, daily limits, triggers, and `chat` context budgets. `maxTokens` bounds what reminders and greetings ask for; `chat.maxTokens` bounds one chat reply. The two limits are **defaults** — see above. |
+| `ai` | Model, reasoning effort, sampling, daily limits, triggers, and `chat`. `maxTokens` bounds what reminders and greetings ask for; `chat.maxTokens` bounds one chat reply. The two limits are **defaults** — see above. `chat.history` sizes the conversation in every prompt (`messages`, `chars`, `messageChars`, `replyDepth`); `chat.toolRounds` and `chat.lookupChars` bound the schedule and note lookups; `chat.memory` caps notes (`personalNotes`, `officeNotes`, `noteChars`, `notesPerReply`) or switches them off. The old keys `replyChars`, `messageChars`, `remember`, `generalFacts`, `personalFacts`, `factChars` and `retention.chatMemoryDays` are refused. |
 | `health` | `pingUrl` dead-man's switch, heartbeat file and staleness, `catchUpGraceHours`, `nightlyBackup`. |
 
 ### `offices/<id>.yaml`

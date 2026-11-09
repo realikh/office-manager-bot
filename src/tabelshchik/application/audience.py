@@ -44,6 +44,7 @@ class Grant:
     audience: Audience
     office_id: str | None = None
     employee: Employee | None = None
+    offices: tuple[str, ...] = ()
 
     @property
     def is_stranger(self) -> bool:
@@ -68,9 +69,12 @@ def resolve(
 
     # Being in an office's group chat is itself the credential: the reminder posts that
     # office's roster there every working day.
-    for office in active:
-        if office.chat_id == chat_id:
-            return Grant(Audience.OFFICE_CHAT, office.id, linked(offices, user_id, today))
+    bound = [office.id for office in active if office.chat_id == chat_id]
+    if bound:
+        employee = linked(offices, user_id, today)
+        home = _home_office(offices, employee, active) if employee is not None else None
+        speaks_for = home if home in bound else bound[0]
+        return Grant(Audience.OFFICE_CHAT, speaks_for, employee, _first_of(speaks_for, bound))
 
     # Outside a known office chat, only a private message can identify anybody. A group
     # the bot was added to by mistake gets nothing, not even a refusal.
@@ -82,10 +86,14 @@ def resolve(
 
     if user_id in admin_ids:
         # An admin who is not on any roster still needs an office to ask about.
-        return Grant(Audience.ADMIN, home or _first(active), employee)
+        chosen = home or _first(active)
+        if chosen is None:
+            return Grant(Audience.ADMIN, None, employee)
+        everyone = [office.id for office in active]
+        return Grant(Audience.ADMIN, chosen, employee, _first_of(chosen, everyone))
 
     if employee is not None and home is not None:
-        return Grant(Audience.EMPLOYEE, home, employee)
+        return Grant(Audience.EMPLOYEE, home, employee, (home,))
 
     return Grant(Audience.STRANGER)
 
@@ -168,3 +176,7 @@ def _home_office(offices: OfficeStore, employee: Employee, active: Sequence[Offi
 
 def _first(active: Sequence[Office]) -> str | None:
     return active[0].id if active else None
+
+
+def _first_of(chosen: str, office_ids: Sequence[str]) -> tuple[str, ...]:
+    return (chosen, *(office_id for office_id in office_ids if office_id != chosen))

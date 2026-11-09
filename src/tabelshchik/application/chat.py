@@ -7,46 +7,38 @@ The per-person allowance is the configured default unless an admin has singled s
 out. Storing an override rather than a copy of the default is what lets the default be
 raised later without walking the roster — only the people deliberately moved stay put.
 
-The model is grounded rather than given tools. It is handed today's date, the asking
-person's own upcoming office days, tomorrow's roster, the thread being replied to, and a
-handful of short facts it previously asked to remember. About the office that is all it
-knows, so there is very little for it to get wrong there. About anything else it may
-answer freely — the bot is meant to be worth talking to, not a schedule lookup with a
-personality bolted on.
-
-Length follows the question. A one-line cap made every answer terse, including the ones
-that needed an explanation; the ceiling is now `ChatPolicy.max_tokens`, and the model is
-told to be brief only when brief is enough.
-
-The reply and the decision about what to remember come back in one JSON response. Two
-calls would cost twice as much and could disagree with each other.
+Every prompt carries the date and time, who is writing, and the recent conversation in
+this chat. The schedule and saved notes are looked up only when a question needs them,
+through two tools; what is worth remembering comes back inside the answer itself.
 """
 
 from __future__ import annotations
 
 import html
 import re
+from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date, timedelta
+from datetime import date
 from enum import StrEnum
 
-from tabelshchik.application import memory
+from tabelshchik.application import chat_tools, memory, transcript
+from tabelshchik.application.audience import linked
+from tabelshchik.application.chat_tools import Toolbox
 from tabelshchik.application.policy import ChatPolicy
 from tabelshchik.application.ports import (
-    ChatMemoryStore,
+    ChatTurn,
     Clock,
     MessageCache,
+    ModelTurn,
+    NoteScope,
+    NoteStore,
     OfficeStore,
+    Role,
     ScheduleStore,
     UsageStore,
 )
-from tabelshchik.application.voice import (
-    Voice,
-    format_date,
-    format_long_date,
-    name_stems,
-)
-from tabelshchik.domain.entities import Employee
+from tabelshchik.application.voice import Voice, format_long_date, name_stems
+from tabelshchik.domain.entities import Employee, Gender
 from tabelshchik.domain.mood import Mood
 from tabelshchik.domain.rng import stable_hash
 
@@ -71,6 +63,7 @@ class ChatRefusal(StrEnum):
 class ChatReply:
     text: str
     refusal: ChatRefusal | None = None
+    lookups: tuple[str, ...] = ()
 
     @property
     def answered(self) -> bool:
@@ -87,6 +80,8 @@ class Thread:
 
     chat_id: int = 0
     reply_to_message_id: int | None = None
+    message_id: int | None = None
+    is_private: bool = False
 
 
 async def answer(
@@ -102,7 +97,9 @@ async def answer(
     policy: ChatPolicy,
     thread: Thread | None = None,
     messages: MessageCache | None = None,
-    memories: ChatMemoryStore | None = None,
+    notes: NoteStore | None = None,
+    reach: Sequence[str] = (),
+    asker_name: str = "",
 ) -> ChatReply:
     today = clock.today()
     mood = voice.mood_for(office_id=office_id, day=today)
@@ -114,7 +111,7 @@ async def answer(
     if not cleaned:
         return ChatReply("", ChatRefusal.EMPTY)
 
-    employee = offices.find_employee_by_user_id(user_id)
+    employee = linked(offices, user_id, today)
     # Every refused attempt gets a different line. The same retort to every message reads
     # as a stuck bot; a new one each time reads as a bot that is sulking on purpose.
     nonce = stable_hash("refusal", str(user_id), cleaned)
@@ -130,52 +127,90 @@ async def answer(
             ChatRefusal.GLOBAL_LIMIT,
         )
 
-    system = _system_prompt(voice, mood, remember=policy.remember and memories is not None)
-    prompt = _user_prompt(
-        question=cleaned,
+    box = _toolbox(
+        user_id=user_id,
         employee=employee,
+        office_id=office_id,
+        reach=reach,
         offices=offices,
         schedule=schedule,
-        office_id=office_id,
+        notes=notes,
         clock=clock,
         policy=policy,
         voice=voice,
-        thread=thread,
-        messages=messages,
-        memories=memories,
     )
+    tools = chat_tools.specs(box) if policy.tool_rounds > 0 else ()
+    turns = [
+        ChatTurn(
+            Role.SYSTEM, _system_prompt(voice, mood, lookups=bool(tools), notes=box.remembers)
+        ),
+        ChatTurn(
+            Role.USER,
+            _user_prompt(
+                question=cleaned,
+                box=box,
+                asker_name=asker_name,
+                thread=thread,
+                messages=messages,
+                voice=voice,
+                clock=clock,
+                policy=policy,
+            ),
+        ),
+    ]
 
-    completion = await voice.model.complete(
-        system,
-        prompt,
-        max_tokens=policy.max_tokens,
-        temperature=policy.temperature,
-        json_object=True,
-    )
+    tokens = 0
+    lookups: list[str] = []
+    result: ModelTurn | None = None
+    try:
+        for round_number in range(policy.tool_rounds + 1):
+            last = round_number == policy.tool_rounds
+            result = await voice.model.converse(
+                turns,
+                tools=tools,
+                allow_tools=not last,
+                max_tokens=policy.max_tokens,
+                temperature=policy.temperature,
+                json_object=True,
+            )
+            if result is None:
+                break
+            tokens += result.total_tokens
+            if last or not result.tool_calls:
+                break
+            turns.append(ChatTurn(Role.ASSISTANT, result.text or None, result.tool_calls))
+            for index, call in enumerate(result.tool_calls):
+                if index < chat_tools.CALLS_PER_ROUND:
+                    output = chat_tools.run(call, box)
+                    lookups.append(call.name)
+                else:
+                    output = chat_tools.SKIPPED
+                turns.append(ChatTurn(Role.TOOL, output, tool_call_id=call.id))
+    finally:
+        # The attempt is counted whatever happened. Otherwise a failing model would be a
+        # free, unlimited way to spend money.
+        usage.record(user_id, today, tokens=tokens)
 
-    # The attempt is counted whatever happened. Otherwise a failing model would be a
-    # free, unlimited way to spend money.
-    usage.record(user_id, today, tokens=completion.total_tokens if completion else 0)
-
-    if completion is None:
+    if result is None or not result.text:
         return ChatReply(
-            _line(voice, "ai.failed", mood, office_id, today), ChatRefusal.MODEL_FAILED
+            _line(voice, "ai.failed", mood, office_id, today),
+            ChatRefusal.MODEL_FAILED,
+            tuple(lookups),
         )
 
-    payload = _parse(completion.text)
-    if payload is not None:
-        reply = str(payload.get("reply", "")).strip()
-    else:
-        reply = _salvage(completion.text)
+    payload = _parse(result.text)
+    reply = str(payload.get("reply", "")).strip() if payload is not None else _salvage(result.text)
     if not reply:
         return ChatReply(
-            _line(voice, "ai.failed", mood, office_id, today), ChatRefusal.MODEL_FAILED
+            _line(voice, "ai.failed", mood, office_id, today),
+            ChatRefusal.MODEL_FAILED,
+            tuple(lookups),
         )
 
-    if payload is not None and memories is not None and policy.remember:
-        _store(payload.get("remember"), memories, policy, employee, office_id, clock)
+    if payload is not None and box.remembers:
+        _keep(payload, box, voice, clock)
 
-    return ChatReply(_sanitise(reply, voice))
+    return ChatReply(_sanitise(reply, voice), lookups=tuple(lookups))
 
 
 def _salvage(raw: str) -> str:
@@ -229,35 +264,86 @@ _REPLY_START = re.compile(r'"reply"\s*:\s*"')
 _ESCAPES = {"n": "\n", "t": "\t", "r": "", "b": "", "f": "", "/": "/", '"': '"', "\\": "\\"}
 
 
-def _store(
-    payload: object,
-    memories: ChatMemoryStore,
-    policy: ChatPolicy,
+_REPLY_START = re.compile(r'"reply"\s*:\s*"')
+_ESCAPES = {"n": "\n", "t": "\t", "r": "", "b": "", "f": "", "/": "/", '"': '"', "\\": "\\"}
+
+
+def _keep(payload: dict[str, object], box: Toolbox, voice: Voice, clock: Clock) -> None:
+    store = box.notes
+    if store is None:
+        return
+    now = clock.now()
+    banned = [term.lower() for term in voice.moods.banned_terms if term]
+
+    writes = memory.parse_writes(
+        payload.get("notes"),
+        limit=box.policy.notes_per_reply,
+        max_chars=box.policy.note_chars,
+        today=clock.today(),
+    )
+    for write in writes:
+        target = _owner(write.scope, box)
+        if target is None:
+            continue
+        subject, keep = target
+        lowered = f"{write.topic} {write.text}".lower()
+        if keep <= 0 or any(term in lowered for term in banned):
+            continue
+        known = store.notes(write.scope, subject, limit=keep)
+        if not any(note.topic == write.topic for note in known) and memory.is_near_identical(
+            write.text, [note.text for note in known]
+        ):
+            continue
+        store.write(
+            write.scope, subject, write.topic, write.text, until=write.until, keep=keep, at=now
+        )
+
+    for forget in memory.parse_forgets(payload.get("forget")):
+        target = _owner(forget.scope, box)
+        if target is not None:
+            store.forget(forget.scope, target[0], forget.topic)
+
+
+def _owner(scope: NoteScope, box: Toolbox) -> tuple[str, int] | None:
+    if scope is NoteScope.PERSON:
+        return str(box.user_id), box.policy.personal_notes
+    if box.employee is not None and box.home is not None:
+        return box.home, box.policy.office_notes
+    return None
+
+
+def _toolbox(
+    *,
+    user_id: int,
     employee: Employee | None,
     office_id: str,
+    reach: Sequence[str],
+    offices: OfficeStore,
+    schedule: ScheduleStore,
+    notes: NoteStore | None,
     clock: Clock,
-) -> None:
-    """Keep one fact, if the model asked and we do not already know it."""
-    remembered = memory.distil(payload, max_chars=policy.fact_chars)
-    if remembered is None:
-        return
-
-    if remembered.scope == memory.EMPLOYEE:
-        if employee is None:
-            # Nothing to attach it to. Discarding beats filing it under a stranger.
-            return
-        subject, keep = employee.id, policy.personal_facts
-    else:
-        subject, keep = office_id, policy.general_facts
-
-    if keep <= 0:
-        return
-
-    known = [item.fact for item in memories.facts(remembered.scope, subject, limit=keep)]
-    if memory.is_redundant(remembered.fact, known):
-        return
-
-    memories.remember(remembered.scope, subject, remembered.fact, keep=keep, at=clock.now())
+    policy: ChatPolicy,
+    voice: Voice,
+) -> Toolbox:
+    reached = tuple(
+        office
+        for office in (offices.get_office(member) for member in (tuple(reach) or (office_id,)))
+        if office is not None
+    )
+    home = offices.office_of(employee.id) if employee is not None else None
+    return Toolbox(
+        user_id=user_id,
+        employee=employee,
+        home=home if any(office.id == home for office in reached) else None,
+        office_id=office_id,
+        reach=reached,
+        offices=offices,
+        schedule=schedule,
+        notes=notes,
+        clock=clock,
+        policy=policy,
+        common=voice.catalog.common,
+    )
 
 
 def _allowance(employee: Employee | None, policy: ChatPolicy) -> int:
@@ -292,8 +378,8 @@ def _parse(raw: str) -> dict[str, object] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _system_prompt(voice: Voice, mood: Mood, *, remember: bool) -> str:
-    """The voice, then the house rules.
+def _system_prompt(voice: Voice, mood: Mood, *, lookups: bool, notes: bool) -> str:
+    """The voice, then the house rules, then the lookups, then the contract.
 
     The persona sets tone only. It used to name allowed joke topics — "только про
     понедельники, дорогу…" — and the model dutifully mentioned Monday in every answer on
@@ -325,147 +411,139 @@ def _system_prompt(voice: Voice, mood: Mood, *, remember: bool) -> str:
         "а не чтобы упомянуть.\n"
         "Не повторяй одну и ту же мысль, шутку или эмодзи в каждом ответе. Эмодзи вообще "
         "ставь редко.\n"
-        "Про расписание и людей этого офиса отвечай строго по данным ниже. Если данных "
-        "нет, так и скажи: не выдумывай даты, имена и цифры.\n"
+        "Про расписание и людей этого офиса отвечай только по данным из инструментов и "
+        "переписки. Если данных нет, так и скажи: не выдумывай даты, имена и цифры.\n"
         "Оформление — обычный текст без Markdown: без звёздочек, решёток и обратных "
         "кавычек. Для структуры используй абзацы и списки с «•» или «1.», код пиши "
         "отдельными строками."
     )
 
-    if remember:
-        contract = (
-            'Верни СТРОГО JSON: {"reply": "...", "remember": {"scope": ..., "fact": "..."}}\n'
-            "reply — твой ответ собеседнику.\n"
-            "remember — заполняй только если в сообщении есть устойчивый факт, который "
-            "пригодится потом: предпочтение, роль, договорённость, особенность работы. "
-            'scope — "office", если это касается всех, или "user", если только собеседника. '
-            "fact — одна короткая фраза.\n"
-            'В остальных случаях (а это большинство) — {"scope": null, "fact": ""}.'
-        )
-    else:
-        contract = 'Верни СТРОГО JSON: {"reply": "..."}'
+    parts = [persona, rules]
+    if lookups:
+        parts.append(_LOOKUPS_WITH_NOTES if notes else _LOOKUPS)
+    parts.append(_CONTRACT_WITH_NOTES if notes else _CONTRACT)
+    return "\n\n".join(parts)
 
-    return f"{persona}\n\n{rules}\n\n{contract}"
+
+_LOOKUPS = (
+    "Инструмент schedule показывает расписание офиса: кто и в какие дни выходит в офис, и "
+    "отдельно дни собеседника. Вызывай его, только когда ответ от этого зависит; на общие "
+    "вопросы отвечай сразу, без инструментов. Никогда не угадывай расписание: посмотри, а "
+    "если данных нет, так и скажи."
+)
+_LOOKUPS_WITH_NOTES = (
+    _LOOKUPS + "\n"
+    "Инструмент recall показывает твои заметки о собеседнике и об офисе: то, что тебе "
+    "рассказывали раньше. Смотри в них, когда ответ может зависеть от того, что тебе "
+    "говорили: личные данные собеседника, его планы, состояние офиса, договоренности. "
+    "Заметки о собеседнике видит только он сам: в групповом чате не пересказывай их, если "
+    "он сам об этом не спросил."
+)
+_CONTRACT = 'Верни СТРОГО JSON: {"reply": "..."}'
+_CONTRACT_WITH_NOTES = (
+    'Верни СТРОГО JSON: {"reply": "...", "notes": [...], "forget": [...]}\n'
+    "reply: твой ответ собеседнику.\n"
+    "notes: что стоит запомнить из этого сообщения, то, что пригодится потом. Дни "
+    "рождения, предпочтения, роли, планы с датами, договоренности, события, что сломалось "
+    "или починилось. Каждая заметка: "
+    '{"about": "me" или "office", "topic": "...", "text": "...", "until": "YYYY-MM-DD" или null}. '
+    'about "me" значит о самом собеседнике, "office" значит полезное всем в офисе. '
+    "topic: одно-три слова по-русски; для office называй, о ком или о чем речь, например "
+    "день рождения Бори. Та же тема обновляет заметку. text: одна короткая фраза по-русски, "
+    "в третьем лице, даже если разговор на другом языке. until: дата, после которой факт "
+    "перестанет быть верным, если он временный.\n"
+    'forget: [{"about": ..., "topic": ...}] для того, что больше не верно или что просили '
+    "забыть. Чтобы исправить или удалить заметку, сначала посмотри recall и возьми точную "
+    "тему.\n"
+    "Никогда не записывай пароли, токены и другие секреты, здоровье, внешность, сплетни и "
+    "оценки людей. Если запоминать нечего, верни пустые списки."
+)
 
 
 def _user_prompt(
     *,
     question: str,
-    employee: Employee | None,
-    offices: OfficeStore,
-    schedule: ScheduleStore,
-    office_id: str,
-    clock: Clock,
-    policy: ChatPolicy,
-    voice: Voice,
+    box: Toolbox,
+    asker_name: str,
     thread: Thread | None,
     messages: MessageCache | None,
-    memories: ChatMemoryStore | None,
-) -> str:
-    sections = [
-        _grounding(
-            employee=employee,
-            offices=offices,
-            schedule=schedule,
-            office_id=office_id,
-            clock=clock,
-            policy=policy,
-            voice=voice,
-        ),
-        _memory(memories, employee, office_id, policy),
-        _chain(thread, messages, policy),
-    ]
-    body = "\n\n".join(section for section in sections if section)
-    return f"{body}\n\nВопрос: {question}" if body else f"Вопрос: {question}"
-
-
-def _grounding(
-    *,
-    employee: Employee | None,
-    offices: OfficeStore,
-    schedule: ScheduleStore,
-    office_id: str,
+    voice: Voice,
     clock: Clock,
     policy: ChatPolicy,
-    voice: Voice,
 ) -> str:
-    today = clock.today()
     common = voice.catalog.common
+    today = clock.today()
     # Without this the model has no idea what day it is, which is how it ends up insisting
     # on Monday to someone writing on a Friday.
-    lines = [f"Сегодня: {format_long_date(today, common)}."]
-
-    if employee is not None:
-        upcoming = schedule.upcoming_for_employee(
-            employee.id, start=today, limit=policy.upcoming_days
+    header = "\n".join(
+        (
+            f"Сегодня: {format_long_date(today, common)}. Время: {clock.now():%H:%M}.",
+            _asker_line(box, asker_name),
+            _chat_line(box, thread),
         )
-        if upcoming:
-            rendered = ", ".join(format_date(day, common) for day in upcoming)
-            lines.append(f"Ближайшие дни этого человека в офисе: {rendered}.")
-        else:
-            lines.append("У этого человека нет запланированных дней в офисе.")
-
-    tomorrow = schedule.day(office_id, today + timedelta(days=1))
-    if tomorrow is not None and tomorrow.roster:
-        names = {e.id: e.full_name for e in offices.employees(office_id)}
-        listed = ", ".join(names.get(eid, eid) for eid in tomorrow.roster)
-        lines.append(f"Завтра в офис выходят: {listed}.")
-
-    return "\n".join(lines)
-
-
-def _memory(
-    memories: ChatMemoryStore | None,
-    employee: Employee | None,
-    office_id: str,
-    policy: ChatPolicy,
-) -> str:
-    """Shared facts always; personal facts only for the person they are about."""
-    if memories is None:
-        return ""
-
-    general = [
-        item.fact for item in memories.facts(memory.OFFICE, office_id, limit=policy.general_facts)
-    ]
-    personal = (
-        [
-            item.fact
-            for item in memories.facts(memory.EMPLOYEE, employee.id, limit=policy.personal_facts)
-        ]
-        if employee is not None
-        else []
     )
-    return memory.render(general, personal)
+    history, marker = _history(thread, messages, policy, today, common.months)
+    sections = [header, history, f"Сообщение, на которое ты отвечаешь{marker}:\n{question}"]
+    return "\n\n".join(section for section in sections if section)
 
 
-def _chain(thread: Thread | None, messages: MessageCache | None, policy: ChatPolicy) -> str:
-    """The messages this question hangs off, oldest first.
-
-    Budgeted twice — per message and for the chain as a whole — and trimmed from the
-    *oldest* end, because the nearest messages are the ones the question refers to.
-    """
-    if thread is None or messages is None or policy.reply_depth <= 0:
-        return ""
-    if thread.reply_to_message_id is None:
-        return ""
-
-    cached = messages.chain(thread.chat_id, thread.reply_to_message_id, depth=policy.reply_depth)
-    if not cached:
-        return ""
-
-    rendered = [
-        f"{item.author}: {_clip(item.text, policy.message_chars)}" for item in cached if item.text
-    ]
-
-    while rendered and sum(len(line) + 1 for line in rendered) > policy.reply_chars:
-        rendered.pop(0)
-
-    return "Переписка, на которую отвечают:\n" + "\n".join(rendered) if rendered else ""
+def _asker_line(box: Toolbox, asker_name: str) -> str:
+    if box.employee is None:
+        return f"Пишет: {asker_name or 'собеседник'}, не сотрудник ни одного офиса."
+    hint = (
+        " (женщина, обращайся к ней в женском роде)" if box.employee.gender is Gender.FEMALE else ""
+    )
+    office = box.offices.get_office(box.home) if box.home is not None else None
+    where = f", офис «{office.name}»" if office is not None else ""
+    return f"Пишет: {box.employee.full_name}{hint}{where}."
 
 
-def _clip(text: str, limit: int) -> str:
-    collapsed = " ".join(text.split())
-    return collapsed if len(collapsed) <= limit else collapsed[: limit - 1].rstrip() + "…"
+def _chat_line(box: Toolbox, thread: Thread | None) -> str:
+    if thread is not None and thread.is_private:
+        return "Чат: личная переписка с тобой."
+    names = ", ".join(f"«{office.name}»" for office in box.reach)
+    if len(box.reach) > 1:
+        return f"Чат: общая группа офисов {names}."
+    return f"Чат: группа офиса {names}."
+
+
+def _history(
+    thread: Thread | None,
+    messages: MessageCache | None,
+    policy: ChatPolicy,
+    today: date,
+    months: Sequence[str],
+) -> tuple[str, str]:
+    if thread is None or messages is None:
+        return "", ""
+    budget = transcript.Budget(
+        messages=policy.history_messages,
+        chars=policy.history_chars,
+        message_chars=policy.message_chars,
+    )
+    chain = (
+        messages.chain(thread.chat_id, thread.reply_to_message_id, depth=policy.reply_depth)
+        if thread.reply_to_message_id is not None and policy.reply_depth > 0
+        else ()
+    )
+    recent = (
+        messages.recent(thread.chat_id, before=thread.message_id, limit=policy.history_messages)
+        if thread.message_id is not None
+        else ()
+    )
+    selected = transcript.select(chain=chain, recent=recent, budget=budget)
+    parents = (
+        messages.get(
+            thread.chat_id, transcript.missing_parents(selected, thread.reply_to_message_id)
+        )
+        if policy.reply_depth > 0
+        else {}
+    )
+    text = transcript.render(selected, parents=parents, budget=budget, today=today, months=months)
+    marker = transcript.reply_marker(
+        thread.reply_to_message_id, transcript.numbering(selected), parents
+    )
+    return text, marker
 
 
 def _sanitise(raw: str, voice: Voice) -> str:

@@ -70,7 +70,7 @@ nothing to register.
 | Path | What belongs there |
 |---|---|
 | `domain/` | Entities, the min-cost-flow solver, the fairness ledger, the calendar, `stable_hash`. Pure. |
-| `application/` | Use cases (`send_attendance_reminder`, `send_tempo_reminder`, `send_holiday_greeting`, `regenerate_schedule`, `manage_absences`, `manage_roster`, `manage_offices`, `manage_admins`, `manage_limits`, `manage_times`, `relay`, `chat`, `memory`, `prune_history`), the `ports.py` Protocols, `chats.py`, `ids.py`, `voice.py`. |
+| `application/` | Use cases (`send_attendance_reminder`, `send_tempo_reminder`, `send_holiday_greeting`, `regenerate_schedule`, `manage_absences`, `manage_roster`, `manage_offices`, `manage_admins`, `manage_limits`, `manage_times`, `relay`, `chat`, `memory`, `prune_history`), the `ports.py` Protocols, `chats.py`, `chat_tools.py`, `transcript.py`, `ids.py`, `voice.py`. |
 | `adapters/` | SQLAlchemy repositories, the Telegram routers, the OpenAI client, APScheduler, XLSX, the `holidays` calendar, fakes. |
 | `config/` | Pydantic models for `app.yaml` and `messages.yaml`; `OfficeSeed` for the import command. |
 | `bootstrap/` | The composition root, job registration, lifespan, `mapping.py`. |
@@ -115,14 +115,15 @@ docstring, where there is one, says what breaks in production if the test fails.
 ## Who the bot will talk to
 
 **One gate, `application/audience.py`.** `resolve()` returns a `Grant` naming the audience
-and the office it may speak about, or `None` for nothing at all:
+and the office it may speak about, or `None` for nothing at all, and `Grant.offices`, every
+office the sender may hear about (the chat's schedule lookup shows nothing outside it):
 
-| Situation | Audience | Office |
-|---|---|---|
-| chat id matches a configured office | `OFFICE_CHAT` | that office |
-| private, user id in the `admin` table | `ADMIN` | their own, else first active |
-| private, linked **and in tenure** | `EMPLOYEE` | that employee's office |
-| anything else | `STRANGER` | `None` |
+| Situation | Audience | Office | Reach |
+|---|---|---|---|
+| chat id matches one or more configured offices | `OFFICE_CHAT` | the asker's own if it is one of them, else the first | every office bound to the chat |
+| private, user id in the `admin` table | `ADMIN` | their own, else first active | every open office |
+| private, linked **and in tenure** | `EMPLOYEE` | that employee's office | that office |
+| anything else | `STRANGER` | `None` | none |
 
 Being in an office's group chat is itself the credential — the reminder posts that
 office's full tagged roster there every working day.
@@ -352,7 +353,9 @@ read once.
 - **`reply_to_message` is populated exactly one level deep.** Deeper threads are
   reconstructed from the `chat_message` cache — see [docs/ai-voice.md](docs/ai-voice.md).
 - **Privacy mode** (on by default) means the bot only receives messages mentioning it or
-  replying to it. Everything degrades gracefully; nothing should assume a full view.
+  replying to it, except in groups where it is an admin, which it is wherever it pins. The
+  chat's conversation window is built from what it received, so it degrades gracefully;
+  nothing should assume a full view.
 
 ### FSM state is in-memory and is dropped on restart
 

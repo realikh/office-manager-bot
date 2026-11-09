@@ -101,6 +101,47 @@ def test_an_office_chat_still_recognises_a_linked_asker(offices) -> None:
     assert result.employee is not None and result.employee.id == "anya"
 
 
+def shared_group(sessions) -> None:
+    seed(
+        sessions,
+        office_seed(),
+        office_seed(id="pine", name="Pine", employees=[{"id": "petya", "name": "Петя"}]),
+    )
+    SqlOfficeStore(sessions).link_telegram_user("anya", ANYA)
+    SqlOfficeStore(sessions).link_telegram_user("petya", 888)
+
+
+def test_a_shared_group_answers_each_person_about_their_own_office(sessions) -> None:
+    shared_group(sessions)
+
+    pine = grant(sessions, chat_id=OVEST_CHAT, user_id=888, is_private=False)
+    ovest = grant(sessions, chat_id=OVEST_CHAT, user_id=ANYA, is_private=False)
+
+    assert pine.office_id == "pine"
+    assert pine.offices == ("pine", "ovest")
+    assert ovest.office_id == "ovest"
+    assert ovest.offices == ("ovest", "pine")
+
+
+def test_a_stranger_in_a_shared_group_hears_about_every_office_in_it(sessions) -> None:
+    shared_group(sessions)
+    result = grant(sessions, chat_id=OVEST_CHAT, user_id=STRANGER, is_private=False)
+    assert result.office_id == "ovest"
+    assert result.offices == ("ovest", "pine")
+
+
+def test_an_office_group_reaches_only_its_own_office(offices) -> None:
+    result = grant(offices, chat_id=OVEST_CHAT, user_id=STRANGER, is_private=False)
+    assert result.offices == ("ovest",)
+
+
+def test_somebody_from_another_office_in_a_group_is_answered_about_that_group(offices) -> None:
+    SqlOfficeStore(offices).link_telegram_user("petya", 888)
+    result = grant(offices, chat_id=OVEST_CHAT, user_id=888, is_private=False)
+    assert result.office_id == "ovest"
+    assert result.offices == ("ovest",)
+
+
 # ------------------------------------------------------------------------ employees
 
 
@@ -145,6 +186,28 @@ def test_an_admin_who_is_an_employee_gets_their_own_office(offices) -> None:
     result = grant(offices, user_id=ADMIN, admins=frozenset({ADMIN}))
     assert result.audience is Audience.ADMIN
     assert result.office_id == "pine"
+
+
+def test_an_employee_in_private_reaches_their_own_office_only(offices) -> None:
+    assert grant(offices, user_id=ANYA).offices == ("ovest",)
+
+
+def test_an_admin_in_private_reaches_every_open_office_their_own_first(offices) -> None:
+    SqlOfficeStore(offices).link_telegram_user("petya", ADMIN)
+    result = grant(offices, user_id=ADMIN, admins=frozenset({ADMIN}))
+    assert result.offices == ("pine", "ovest")
+
+
+def test_a_closed_office_is_out_of_reach(offices) -> None:
+    from tabelshchik.adapters.db.repositories import SqlOfficeAdminStore
+
+    SqlOfficeAdminStore(offices).set_active("pine", False)
+    result = grant(offices, user_id=ADMIN, admins=frozenset({ADMIN}))
+    assert result.offices == ("ovest",)
+
+
+def test_a_stranger_reaches_nothing(offices) -> None:
+    assert grant(offices, user_id=STRANGER).offices == ()
 
 
 def test_admin_rights_come_from_the_environment_not_the_roster(offices) -> None:

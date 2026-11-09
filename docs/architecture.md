@@ -121,15 +121,16 @@ adminship back.
 re-granted adminship on every boot would make leaving impossible, which is the thing this
 was built for. The emptiness test doubles as the way back in.
 
-**Chat memory is a ring buffer, not a time series.** Writing a new fact is what evicts the
-oldest. A bounded number of rows means a bounded prompt, which means a bill that cannot
-creep; retention by age would let a busy week silently double the cost of every message.
-The raw message cache is the opposite — it exists only to rebuild a reply chain, which
-nobody follows back more than a few days, so that one is pruned by age.
+**Chat memory is looked up, not carried.** Saved notes and the schedule reach the model
+only through two lookups it calls when a question needs them, so a general question costs
+one call and carries none of it. Notes are bounded by count per person and per office,
+evicted least recently used first, and pruned when nobody has written or read one for a
+year. The raw message cache is the opposite: it is the recent conversation, in every
+prompt, bounded by characters and pruned after a few days.
 
-**One model call, not two.** The chat's reply and its decision about what to remember come
-back in a single JSON response. Two calls would cost twice as much and could disagree
-with each other.
+**Writing a note costs no call.** The chat's reply and what it decided to remember come
+back in a single JSON response; only reading costs a round. Two calls for a write would
+cost twice as much and could disagree with each other.
 
 ## Things deliberately not built
 

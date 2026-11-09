@@ -10,7 +10,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 
-from tabelshchik.application.ports import Completion, CopiedMessages, SentMessage
+from tabelshchik.application.ports import (
+    ChatTurn,
+    Completion,
+    CopiedMessages,
+    ModelTurn,
+    Role,
+    SentMessage,
+    ToolSpec,
+)
 
 
 @dataclass
@@ -115,6 +123,9 @@ class StubChatModel:
     #: What the API would have reported spending. Zero unless a test cares.
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    conversations: list[tuple[tuple[ChatTurn, ...], tuple[ToolSpec, ...]]] = field(
+        default_factory=list
+    )
 
     async def complete(
         self,
@@ -134,3 +145,60 @@ class StubChatModel:
             prompt_tokens=self.prompt_tokens,
             completion_tokens=self.completion_tokens,
         )
+
+    async def converse(
+        self,
+        turns: Sequence[ChatTurn],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        allow_tools: bool = True,
+        max_tokens: int,
+        temperature: float,
+        json_object: bool = False,
+    ) -> ModelTurn | None:
+        self.prompts.append((_first(turns, Role.SYSTEM), _first(turns, Role.USER)))
+        self.json_requested.append(json_object)
+        self.conversations.append((tuple(turns), tuple(tools)))
+        if self.reply is None:
+            return None
+        return ModelTurn(
+            text=self.reply,
+            prompt_tokens=self.prompt_tokens,
+            completion_tokens=self.completion_tokens,
+        )
+
+
+@dataclass
+class ScriptedChatModel:
+    script: list[ModelTurn | None] = field(default_factory=list)
+    calls: list[tuple[tuple[ChatTurn, ...], tuple[ToolSpec, ...], bool]] = field(
+        default_factory=list
+    )
+
+    async def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        max_tokens: int,
+        temperature: float,
+        json_object: bool = False,
+    ) -> Completion | None:
+        return None
+
+    async def converse(
+        self,
+        turns: Sequence[ChatTurn],
+        *,
+        tools: Sequence[ToolSpec] = (),
+        allow_tools: bool = True,
+        max_tokens: int,
+        temperature: float,
+        json_object: bool = False,
+    ) -> ModelTurn | None:
+        self.calls.append((tuple(turns), tuple(tools), allow_tools))
+        return self.script.pop(0) if self.script else None
+
+
+def _first(turns: Sequence[ChatTurn], role: Role) -> str:
+    return next((turn.content or "" for turn in turns if turn.role is role), "")

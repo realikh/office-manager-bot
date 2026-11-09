@@ -29,7 +29,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # The only import here that is not a domain entity. Adminship is a Telegram-permissions
 # concept, not a scheduling one, so it lives with the ports rather than in the domain.
-from tabelshchik.application.ports import AdminRole, PostKind
+from tabelshchik.application.ports import AdminRole, NoteScope, PostKind
 from tabelshchik.domain.entities import (
     AbsenceKind,
     AssignmentSource,
@@ -413,23 +413,23 @@ class ChatMessage(Base):
     __table_args__ = (Index("ix_chat_message_at", "at"),)
 
 
-class ChatMemory(Base):
-    """A short fact the bot asked to keep.
-
-    ``scope`` is ``office`` (shared with everyone in that chat) or ``employee`` (shown
-    only to the person it is about). Both are ring buffers bounded by config, so the
-    prompt built from them has a fixed maximum size.
-    """
-
-    __tablename__ = "chat_memory"
+class MemoryNote(Base):
+    __tablename__ = "memory_note"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    scope: Mapped[str] = mapped_column(String(16))
+    scope: Mapped[NoteScope] = mapped_column(_enum(NoteScope))
     subject: Mapped[str] = mapped_column(String(64))
-    fact: Mapped[str] = mapped_column(Text)
-    at: Mapped[datetime] = mapped_column(DateTime)
+    topic: Mapped[str] = mapped_column(String(48))
+    text: Mapped[str] = mapped_column(Text)
+    until: Mapped[date | None] = mapped_column(Date, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime)
+    updated_at: Mapped[datetime] = mapped_column(DateTime)
+    touched_at: Mapped[datetime] = mapped_column(DateTime)
 
-    __table_args__ = (Index("ix_chat_memory_scope_subject", "scope", "subject", "id"),)
+    __table_args__ = (
+        UniqueConstraint("scope", "subject", "topic", name="uq_memory_note_topic"),
+        Index("ix_memory_note_touched", "scope", "subject", "touched_at"),
+    )
 
 
 class AuditLog(Base):

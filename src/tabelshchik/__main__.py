@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import html
 import sys
 import time
 from datetime import timedelta
@@ -16,7 +17,9 @@ from pathlib import Path
 
 from tabelshchik.adapters.fakes import RecordingNotifier
 from tabelshchik.adapters.reports.xlsx import build_workbook, upcoming_week
+from tabelshchik.application.audience import resolve
 from tabelshchik.application.build_report import ReportDay, build_report
+from tabelshchik.application.chat import Thread, answer
 from tabelshchik.application.regenerate_schedule import regenerate
 from tabelshchik.application.send_attendance_reminder import send_attendance_reminder
 from tabelshchik.bootstrap.container import Services, build_services
@@ -88,6 +91,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     dry.add_argument("--office", default=None)
 
+    ask = commands.add_parser(
+        "ask",
+        help="put one question to the chat; it writes usage and notes, so use a copy",
+        parents=[inherited],
+    )
+    ask.add_argument("question")
+    ask.add_argument("--user-id", type=int, required=True)
+    ask.add_argument("--chat-id", type=int, default=None, help="a group; private if omitted")
+
     imp = commands.add_parser(
         "import-office",
         help="load office YAML into the database (offices already there are skipped)",
@@ -111,6 +123,7 @@ def main(argv: list[str] | None = None) -> int:
         "preview": _preview,
         "simulate": _simulate,
         "dry-run": _dry_run,
+        "ask": _ask,
     }
     return handlers[args.command](args)
 
@@ -307,6 +320,44 @@ def _preview(args: argparse.Namespace) -> int:
     print()
     _write_workbook(services, args.office, result, args.out)
     return 0
+
+
+def _ask(args: argparse.Namespace) -> int:
+    services = _services(args)
+    private = args.chat_id is None
+    chat_id = args.user_id if private else args.chat_id
+    grant = resolve(
+        chat_id=chat_id,
+        user_id=args.user_id,
+        is_private=private,
+        offices=services.offices,
+        admin_ids=services.admin_ids,
+        today=services.clock.today(),
+    )
+    if grant.office_id is None:
+        print("the gate refuses this user in this chat: nothing would be answered")
+        return 1
+
+    reply = asyncio.run(
+        answer(
+            question=args.question,
+            user_id=args.user_id,
+            office_id=grant.office_id,
+            offices=services.offices,
+            schedule=services.schedule,
+            usage=services.usage,
+            voice=services.voice,
+            clock=services.clock,
+            policy=services.chat_policy,
+            thread=Thread(chat_id=chat_id, message_id=sys.maxsize, is_private=private),
+            messages=services.messages_cache,
+            notes=services.notes,
+            reach=grant.offices,
+        )
+    )
+    print(f"--- lookups: {', '.join(reply.lookups) or 'none'} ---")
+    print(html.unescape(reply.text))
+    return 0 if reply.answered else 1
 
 
 def _simulate(args: argparse.Namespace) -> int:

@@ -111,6 +111,33 @@ def test_a_time_left_in_the_file_is_refused_rather_than_ignored(tmp_path: Path, 
         load(setup(tmp_path, app={**MINIMAL_APP, **app}))
 
 
+@pytest.mark.parametrize(
+    "app",
+    [
+        {"ai": {"chat": {"generalFacts": 20}}},
+        {"ai": {"chat": {"replyChars": 1200}}},
+        {"ai": {"chat": {"remember": True}}},
+        {"retention": {"chatMemoryDays": 90}},
+    ],
+)
+def test_an_old_memory_setting_is_refused_rather_than_ignored(tmp_path: Path, app) -> None:
+    with pytest.raises(ConfigError, match="unknown setting"):
+        load(setup(tmp_path, app={**MINIMAL_APP, **app}))
+
+
+def test_the_shipped_chat_limits_are_the_ones_the_docs_describe(tmp_path: Path) -> None:
+    chat = load(setup(tmp_path, app=yaml.safe_load(Path("config/app.yaml").read_text("utf-8"))))
+    limits = chat.app.ai.chat
+    assert (limits.history.messages, limits.history.chars, limits.history.message_chars) == (
+        60,
+        6000,
+        1000,
+    )
+    assert (limits.tool_rounds, limits.lookup_chars) == (2, 8000)
+    assert (limits.memory.personal_notes, limits.memory.office_notes) == (30, 60)
+    assert chat.app.retention.memory_idle_days == 365
+
+
 def test_the_chat_reply_budget_is_separate_from_the_reminders(tmp_path: Path) -> None:
     config = load(setup(tmp_path))
     assert config.app.ai.chat.max_tokens == 2000

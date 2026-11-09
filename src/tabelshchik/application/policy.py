@@ -99,18 +99,19 @@ class ChatPolicy:
     max_tokens: int = 2000
     temperature: float = 1.0
     triggers: frozenset[str] = frozenset({"mention", "reply", "private"})
-    #: How much of the person's own schedule to put in front of the model.
-    upcoming_days: int = 5
+    history_messages: int = 60
+    history_chars: int = 6000
+    message_chars: int = 1000
     #: How far back a reply chain is followed. Telegram gives us one level; the rest is
     #: reconstructed from the message cache.
     reply_depth: int = 10
-    reply_chars: int = 1200
-    message_chars: int = 200
-    #: Whether the model may write facts down at all.
-    remember: bool = True
-    general_facts: int = 20
-    personal_facts: int = 10
-    fact_chars: int = 120
+    tool_rounds: int = 2
+    lookup_chars: int = 8000
+    memory: bool = True
+    personal_notes: int = 30
+    office_notes: int = 60
+    note_chars: int = 200
+    notes_per_reply: int = 3
 
 
 @dataclass(frozen=True, slots=True)

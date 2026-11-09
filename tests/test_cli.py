@@ -100,6 +100,7 @@ def test_defaults_apply_when_nothing_is_passed() -> None:
         ("simulate",),
         ("regenerate", "--office", "ovest"),
         ("preview", "--office", "ovest"),
+        ("ask", "--user-id", "42", "когда я в офисе?"),
         ("import-office", "offices/ovest.yaml"),
     ],
 )

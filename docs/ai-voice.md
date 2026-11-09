@@ -201,15 +201,21 @@ House rules, also stated at the top of `messages.yaml`:
 ## The chat
 
 `application/chat.py`. Triggered by mention, reply, or private message
-(`ai.triggers`). One request per question, returning JSON:
+(`ai.triggers`). The orchestration in one paragraph: every question gets a small context
+that is always there (now, who is writing, where, and the recent conversation). The
+schedule and saved notes are not in it; they are two lookups the model calls through
+OpenAI function calling, run locally against the database. A general question is answered
+by the first call. A schedule or memory question costs one more. What is worth remembering
+comes back inside the final answer, so writing a note never costs a call:
 
 ```json
-{"reply": "…", "remember": {"scope": "office" | "user" | null, "fact": "…"}}
+{"reply": "…",
+ "notes": [{"about": "me", "topic": "день рождения", "text": "3 марта", "until": null}],
+ "forget": [{"about": "office", "topic": "кофемашина"}]}
 ```
 
-The reply and the decision about what to remember come back together. Two calls would
-cost twice as much and could disagree with each other. Prose instead of JSON is used
-as-is and nothing is remembered — a model that ignored the contract still answered.
+Prose instead of JSON is used as-is and nothing is remembered: a model that ignored the
+contract still answered.
 
 A JSON object that does not parse is almost always a reply the token ceiling cut off.
 `_salvage` recovers the text of `"reply"` up to the cut and ends it with `…`; it used to be
@@ -240,49 +246,99 @@ over Telegram's 4096 on line breaks, so an escaped entity is never cut in half, 
 every part so a reply to any of them finds the thread. Output is plain text: Markdown
 would arrive as literal asterisks, since everything the model writes is escaped.
 
-### What goes into the prompt
+### What is always in the prompt
 
-1. **Today's date and weekday.** Without it the model cannot know it is Friday, which is
-   how it ends up insisting on Monday to somebody who just said otherwise.
-2. The asker's own upcoming office days, and tomorrow's roster.
-3. **Memory** — shared facts always, personal facts only for the person they are about.
-4. **The reply chain**, oldest first.
+1. **Today's date, weekday and time.** Without it the model cannot know it is Friday,
+   which is how it ends up insisting on Monday to somebody who just said otherwise.
+2. **Who is writing**: their roster name and office, or "not on any roster". A woman on
+   the roster gets a hint to be addressed in the feminine; male is the default and often
+   simply unset, so it is never passed and the model goes by the name.
+3. **Where**: a private chat, an office's group, or a group shared by several offices.
+4. **The conversation** (`application/transcript.py`), described below.
 
-Every part has a hard character budget, so the worst-case prompt size is known in advance
-instead of discovered on an invoice.
+The asker's schedule, tomorrow's roster and every saved fact used to be in every prompt.
+They are lookups now.
 
-### Reply chains
+### The conversation
 
-Telegram populates `reply_to_message` **exactly one level deep**. Anything further back is
-reconstructed from the `chat_message` table, which caches every message the bot receives
-plus its own replies — the latter matter most, since a follow-up usually hangs off the
-bot's own answer.
+Built from the `chat_message` cache, which keeps every message the bot sees in a chat it
+answers in, plus its own replies. Two sources, in this order:
 
-Depth is `ai.chat.replyDepth` (10). The chain is trimmed from the **oldest** end when it
-exceeds `replyChars`, because the nearest messages are the ones the question refers to.
+- the reply chain above the message being answered, followed through the cache whoever
+  wrote each link, up to `ai.chat.history.replyDepth` (10), and never more than half the
+  budget, so a deep chain cannot crowd out what was just said;
+- the latest messages of the chat, newest first, until the budget runs out.
 
-**The honest limit:** with Telegram privacy mode on (the default) the bot only receives
-messages that mention it or reply to it, so a chain through ordinary chatter stops at the
-first link nobody cached. That is a partial chain, never a wrong one. Setting privacy to
-Disabled in @BotFather unlocks the full depth and means the bot receives every group
-message. No code changes either way. Raw messages are pruned after
-`retention.chatMessagesDays` (7) and used for nothing else.
+The budget is characters, `history.chars` (6000), with each message clipped to
+`history.messageChars` (1000) and `history.messages` (60) only as a ceiling. Chat lines of
+a hundred or two hundred characters give thirty to sixty messages; a run of long ones gives
+about six. Messages are printed oldest first, numbered, with their time and author, and a
+reply says which number it answers: `#4 [13:41] Вера (ответ на #2): ...`. That is what lets
+the model follow two other people talking to each other, not only replies to itself. A
+parent outside the window is quoted in one line; with `replyDepth: 0` nothing is quoted.
 
-### Memory
+The message being answered is never in the transcript: it is the question, and quoting it
+back would pay for it twice. Anything with a higher message id is left out too, so a
+message that arrived while the bot was working cannot leak into the answer to an earlier
+one. The router stores Telegram's own time for each message; the parent of a reply used to
+get the child's arrival time.
 
-Two scopes in `chat_memory`:
+**What the bot can see.** The bot pins, so in the office groups it is an admin, and
+Telegram delivers every group message to admin bots whatever the privacy setting. In a
+group where it is not an admin, privacy mode limits it to mentions and replies, and the
+transcript is partial, never wrong; Disabled in @BotFather lifts that. Captions are cached
+too, so a photo with a caption is part of the conversation; only text is ever answered.
+Raw messages are pruned after `retention.chatMessagesDays` (7).
 
-- `office` — shared with everyone in that office's chat.
-- `employee` — injected **only** when that exact person is asking. A personal fact from
-  an unlinked stranger is discarded rather than filed under a guess.
+**What leaves the building.** Every answer in a group carries up to 6000 characters of
+that group's recent conversation to OpenAI. That was asked for; it is still worth knowing.
 
-Both are **ring buffers**: writing a new fact is what evicts the oldest. That is the whole
-retention policy — a bounded number of rows means a bounded prompt. `application/memory.py`
-holds the pure half (cleaning, truncation on a word boundary, near-duplicate collapse by
-word overlap against the *smaller* set, so a restatement merges).
+### Lookups
 
-`ai.chat.remember: false` switches the whole thing off, including the JSON field in the
-prompt.
+`application/chat_tools.py`. Two tools, read-only, plain Russian text out, each result
+clipped to `ai.chat.lookupChars` (8000):
+
+- **`schedule(office?, from?, to?)`**: one line per day with the people on it, the asker's
+  own days first, where the schedule ends, ISO dates, at most 62 days at a time. Which
+  offices it may show comes from the gate: `Grant.offices`. In an office group that is
+  every office bound to the group, which is already where both rosters and the workbook are
+  posted. Privately, an employee's own office, or every open office for an admin.
+- **`recall(about: "me" | "office" | "both")`**: the asker's own notes and their office's,
+  newest first, each with the date it was written and, if set, the date it stops being
+  true. Marks what it returned as touched.
+
+The loop calls the model; if it asks for lookups, runs them (three per round at most,
+every call id answered, the extras with "skipped", because the API refuses a conversation
+with an unanswered call), and calls again. After `ai.chat.toolRounds` (2) rounds the last
+call goes with `tool_choice: "none"` and has to answer; a model that still asks for a
+lookup fails the question rather than loops. Bad arguments come back to the model as an
+error line. One question counts once against the allowances, and every call's tokens are
+added to its usage.
+
+### Notes
+
+`application/memory.py` is the pure half, `SqlNoteStore` the stored one, in `memory_note`.
+
+- **`me` notes** belong to the asker's Telegram account and are only ever recalled for
+  that person. The model is told not to bring them up unasked in a group.
+- **`office` notes** belong to the office, and only a linked employee in tenure can write
+  them, into their own office. Anyone in a group passes the gate; a guest or an admin with
+  no roster record can keep personal notes but cannot plant office ones.
+- **The topic is the key.** Writing the same topic again updates the note, which is how
+  "кофемашина сломана" becomes "кофемашина работает" instead of both. Office topics name
+  who or what they are about ("день рождения Бори"), so two birthdays never share one.
+  Nothing is ever replaced across topics; a text nearly identical to a note already there
+  (word overlap over the union of 0.9 or more, same numbers) is skipped. Overlap against
+  the smaller set used to collapse "У Бори день рождения 5 мая" into "У Пети ...".
+- Notes are written in Russian whatever the conversation language, cleaned of markup,
+  links and handles, at most `memory.noteChars` (200) each and `memory.notesPerReply` (3)
+  per answer. `until`, when the model sets one, must be a real date within a year.
+- **Limits**: `memory.personalNotes` (30) per person, `memory.officeNotes` (60) per office.
+  Over the limit, the note least recently written or looked up goes. A note nobody wrote
+  or recalled for `retention.memoryIdleDays` (365) is pruned, and so is one past its
+  `until`. Deleting an office deletes its notes.
+
+`ai.chat.memory.enabled: false` removes the recall lookup and the notes from the contract.
 
 ## Fallbacks
 
@@ -315,10 +371,11 @@ escaped ellipsis.
   then refused with a 4xx, and every caller fell back to the written lines without a word.
   A shutdown looks exactly like that, so check
   [the deprecations page](https://developers.openai.com/api/docs/deprecations) first.
-- **One call per chat message**, capped at 10 per person per day and 200 globally
-  (`globalDailyLimit` is a stop-loss, not a quota). The worst case is the cap times a
-  full 2000-token reply — at nano prices, cents a day. A reply is only that long when the
-  question needs it.
+- **One call per chat message, two or three when it looks something up**, capped at 10
+  questions per person per day and 200 globally (`globalDailyLimit` is a stop-loss, not a
+  quota). Every round resends the whole prompt, and the conversation window is up to 6000
+  characters, so a question costs several times what it did with only a reply chain. At
+  the caps that is still cents a day.
 - **One call per reminder per office**: the attendance reminder daily, Tempo on the
   days it is due, a greeting on holidays. Not rate-limited; it does not need to be at
   that volume.
@@ -371,7 +428,8 @@ which is how a missing mood stays invisible until 15:30 on a Friday.
 ## After changing any of this
 
 ```bash
-uv run pytest tests/application/test_voice.py tests/integration/test_attendance_reminder.py \
+uv run pytest tests/application/test_voice.py tests/application/test_memory.py \
+              tests/application/test_transcript.py tests/integration/test_attendance_reminder.py \
               tests/integration/test_chat_context.py tests/integration/test_tempo_and_chat.py \
               tests/integration/test_holiday_greeting.py -q
 uv run tabelshchik validate
@@ -380,3 +438,7 @@ uv run tabelshchik validate
 Then look at the output with your own eyes. Render every mood, with the model answering
 well, answering badly, and switched off entirely. The tests check the contract; only
 reading the messages tells you whether they are any good.
+
+For the chat, `tabelshchik ask --user-id N [--chat-id N] "..."` puts one question to the
+real model against the configured database and prints which lookups it made. It writes
+usage and notes like the bot does, so point it at a copy of the database.
