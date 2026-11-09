@@ -70,7 +70,6 @@ def catalog(messages: MessagesConfig) -> Catalog:
     variants = {
         "attendance.intro": _spread(messages.attendance.intro),
         "attendance.tails": _spread(messages.attendance.tails),
-        "attendance.emojis": _spread(messages.attendance.emojis),
         "attendance.empty": _spread(messages.attendance.empty),
         "tempo.weekly": _spread(messages.tempo.weekly),
         "tempo.monthEnd": _spread(messages.tempo.month_end),
@@ -79,16 +78,6 @@ def catalog(messages: MessagesConfig) -> Catalog:
         "ai.rateLimited": _spread(messages.ai.rate_limited),
         "ai.globalLimited": _spread(messages.ai.global_limited),
         "ai.failed": _spread(messages.ai.failed),
-    }
-
-    gendered = {
-        "attendance.epithets": {
-            mood: {
-                gender: tuple(messages.attendance.epithets.for_mood(mood).for_gender(gender))
-                for gender in ("male", "female")
-            }
-            for mood in Mood
-        },
     }
 
     per_mood = {
@@ -109,7 +98,6 @@ def catalog(messages: MessagesConfig) -> Catalog:
     return Catalog(
         common=common,
         variants=variants,
-        gendered=gendered,
         per_mood=per_mood,
         plain=plain,
     )

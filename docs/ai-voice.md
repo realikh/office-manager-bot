@@ -8,8 +8,8 @@ editing a prompt, a guard, or `config/messages.yaml`.
 **The model never receives a fact, and never emits one.**
 
 It does not know the date, the weekday, the office name, or who is on the roster. It
-writes a flavour clause and some epithets. Every date, weekday, office and person in a
-sent message was placed there by `application/voice.py`.
+writes a flavour clause. Every date, weekday, office and person in a sent message was
+placed there by `application/voice.py`.
 
 This is a *structural* guarantee, not a filter. A hallucinating model can produce an
 awkward phrase; it cannot announce the wrong day, the wrong office, or a colleague who
@@ -62,56 +62,33 @@ unintended.
 
 ## The reminder, end to end
 
-`bootstrap/jobs.py` → `application/send_attendance_reminder.py` → `voice.decorate()` →
-`voice.static()` → the notifier.
+`bootstrap/jobs.py`, then `application/send_attendance_reminder.py`, then `voice.tail()`,
+then `voice.static()`, then the notifier.
 
-`Voice.decorate()` makes **one** request returning JSON:
+`Voice.tail()` makes **one** request returning JSON:
 
 ```json
-{
-  "emojis": ["🛡", "🎉"],
-  "epithets": ["Несгибаемый защитник", "Душа компании"],
-  "tail": "кофемашина уже нервничает"
-}
+{"tail": "кофемашина уже нервничает"}
 ```
 
-The model is told only how many epithets are needed and what gender each must be
-(`1) мужской род, 2) женский род`), plus today's icons. It is never sent the names.
+The model is told nothing about the day, the office or the people, only the persona and
+today's icons. The icons are twenty from the allowlist (`SAFE_EMOJI`), picked by
+`emoji_choices` with `stable_hash("emoji-choices", office, day)`, so a different set every
+day and the same set all day. They are offered as imagery for the phrase and must not
+appear in it. Without them the same prompt every morning gets the same answer: the prompt
+once named its topics ("про кофе, дорогу, стойкость") and the phrase came back about
+coffee every day, the persona lesson below learnt a second time.
 
-Today's icons are twenty from the allowlist, picked by `emoji_choices` with
-`stable_hash("emoji-choices", office, day)`, so a different set every day and the same set
-all day. The emojis come first in the contract and each title is written from its icon,
-so the set steers the titles and the tail too. The prompt used to offer the whole list and
-name the topics ("про кофе, дорогу, стойкость"), and every day came back as ☕ Кофейный
-гений and 🛡 Несгибаемый защитник: the persona lesson below, learnt a second time.
+The tail runs through `render_tail`. Rejected, it is replaced by the written per-mood tail.
 
-Then:
+Each roster line is the person and nothing else: the tag, or the name with the username,
+or the bare name. The lines used to carry a model-written title and an icon in front of
+each name ("кирпичный философ"); they were removed at the owner's request, and with them
+the gender check and the per-person icon pools.
 
-- The tail runs through `render_tail`. Rejected → the written per-mood tail.
-- Each epithet runs through `render_epithet` **independently**. Rejected → the written
-  per-mood, per-gender epithet for that slot. A model that titles one person well and
-  fumbles the next costs only the second title.
-- Each emoji runs through `render_emoji`, which is an **allowlist** (`SAFE_EMOJI`, about
-  ninety icons) rather than a pattern check, narrowed to today's icons. Rejected, or
-  already used by somebody above: the mood's own pool for that slot, shuffled with a
-  stable hash, and then today's icons, so nothing repeats inside one message while
-  anything unused is left.
-
-  Asking the model for the icon is what makes it mean something: ☕ goes to «Кофейный
-  гений» and 🗺 to «Планировщик маршрутов». Before, the icon was dealt from a pool seeded
-  on the office and the day, so it had nothing to do with the title beside it — and two
-  renders of the same day produced different titles under identical icons, which is what
-  made the icons look hardcoded.
-
-  An allowlist rather than "is this an emoji": a work chat is not the place to find out
-  what a model considers appropriate. It refuses flags (a political statement in some
-  rooms), skin-tone modifiers (not ours to assign to somebody), and anything not on the
-  list. Every curated pool icon is on it, so the same icon is never judged two ways —
-  there is a test for that.
-
-The rendered line loop is over `snapshot.roster`. **Decoration is optional; being
-reminded is not.** With the model off, broken or out of credit, everyone scheduled still
-gets a tagged line with a written title. There is a test that asserts exactly this.
+The rendered line loop is over `snapshot.roster`. **The phrase is optional; being reminded
+is not.** With the model off, broken or out of credit, everyone scheduled still gets a
+tagged line. There is a test that asserts exactly this.
 
 ## Whole messages: Tempo and holidays
 
@@ -174,8 +151,6 @@ strict.
 | Roster name stems | A colleague it was never given |
 | Banned terms | `personality.bannedTerms` |
 | Shouting (>60% caps, 12+ letters) | A model having a moment |
-| Gender agreement (epithets) | *"Мужик"* in front of a woman's name |
-| Allowlist (emojis) | A flag, a skin tone, or whatever else the model reached for |
 
 ### Stem matching, carefully
 
@@ -187,16 +162,6 @@ character of a short word is a disaster: `мая` → `ма`, which matches *к�
 boundaries**. `name_stems` is the exception — it substring-matches down to two characters,
 because a false positive costs one written line while a real name in a group chat does
 not.
-
-### Gender agreement
-
-`_agrees` is a heuristic and deliberately a strict one. It looks at the head word's
-ending, which is unambiguous for adjectives (`-ый/-ий/-ой` vs `-ая/-яя`), and treats a
-lone masculine-looking noun as a mismatch for a female slot. Over-rejecting costs one
-written title that reads just as well.
-
-`Employee.gender` comes from the office YAML and defaults to `male`. Setting it is part
-of the admin add-employee flow for exactly this reason.
 
 ## Moods
 
@@ -319,7 +284,7 @@ Four layers, all silent. The written corpus is the floor on quality.
 2. **Empty persona for the mood** → written text.
 3. **Model returned nothing** (network, 4xx, retries exhausted) → written text; chat
    answers an `ai.failed` variant.
-4. **Guards rejected it** → written text, per slot for epithets and per slot for emoji.
+4. **Guards rejected it** → written text.
 
 Plus: over the daily allowance → an `ai.rateLimited` variant — "я с тобой больше не
 разговариваю, до завтра", in the day's mood — on every further attempt, a different line
@@ -372,17 +337,16 @@ attached file. Never slice a caption to length.
 Schema in `config/messages.py`, flattened to dotted catalog keys in
 `bootstrap/mapping.py` — that mapping is the authoritative list of keys.
 
-Three shapes:
+Two shapes:
 
 - `MoodVariants` — a list per mood, one picked stably per day. All five moods required.
-- `MoodGendered` — male/female lists per mood (epithets only).
 - `MoodText` — one string per mood (`ai.persona` only).
 
 Startup validators, which will refuse to boot:
 
 - every `attendance.intro` line carries `{when}`, `{date}`, `{office}` and `{tail}`;
 - every `attendance.empty` line carries `{when}` and `{date}`;
-- `attendance.tails` and `attendance.emojis` contain **no braces** — they are substituted
+- `attendance.tails` contain **no braces** — they are substituted
   *into* a template, so a brace would survive into the final text and read as a failed
   substitution;
 - `tempo.footer` carries `{url}`, every `tempo.lastMinutes` line carries `{minutes}`, and

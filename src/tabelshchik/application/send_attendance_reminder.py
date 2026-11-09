@@ -183,21 +183,19 @@ async def _render_roster(
 ) -> str:
     """The opening line, then one row per person.
 
-    The loop is over the roster, never over anything the model returned. A decoration that
-    is missing, short, or nonsense costs a hand-written title and nothing else — everyone
+    The loop is over the roster, never over anything the model returned. A closing phrase
+    that is missing or nonsense costs a hand-written one and nothing else; everyone
     scheduled is still named and still tagged.
     """
     # Reading order, not id order: `DaySnapshot.roster` sorts by employee id, which is an
     # implementation detail nobody in the chat can see.
     ordered = sorted(roster, key=lambda employee_id: _sort_key(employees, employee_id))
-    genders = [_gender_of(employees, employee_id) for employee_id in ordered]
 
-    decoration = await voice.decorate(
+    tail = await voice.tail(
         mood,
         office_id=office_id,
         office_name=office_name,
         day=today,
-        genders=genders,
         forbidden=[employee.full_name for employee in employees.values()],
     )
 
@@ -209,25 +207,16 @@ async def _render_roster(
         when=when,
         date_text=date_text,
         office_name=office_name,
-        tail=decoration.tail,
+        tail=tail,
     )
 
-    rows = [
-        f"{decoration.emojis[index]} {decoration.epithets[index]} "
-        f"{_mention_line(employees, employee_id)}"
-        for index, employee_id in enumerate(ordered)
-    ]
+    rows = [_mention_line(employees, employee_id) for employee_id in ordered]
     return "{intro}\n\n{body}".format(intro=intro, body="\n".join(rows))
 
 
 def _sort_key(employees: dict[str, Employee], employee_id: str) -> str:
     employee = employees.get(employee_id)
     return (employee.full_name if employee else employee_id).casefold()
-
-
-def _gender_of(employees: dict[str, Employee], employee_id: str) -> str:
-    employee = employees.get(employee_id)
-    return str(employee.gender) if employee else "male"
 
 
 def _chat_is_shared(offices: OfficeStore, chat_id: int | None) -> bool:

@@ -394,9 +394,9 @@ async def receive_new_username(message: Message, state: FSMContext) -> None:
     raw = (message.text or "").strip()
     await state.update_data(username=None if raw in {SKIP, ""} else raw)
     await state.set_state(AddEmployee.waiting_for_gender)
-    # Asked for, not guessed: the reminder writes a gendered epithet in front of the name,
-    # and a name alone is not evidence of anything.
-    await _step(message, state, "Пол — от него зависит род в напоминаниях:", gender_picker())
+    await _step(
+        message, state, "Пол: бот будет обращаться к человеку в нужном роде.", gender_picker()
+    )
 
 
 @router.callback_query(AddEmployee.waiting_for_gender, F.data.startswith("adm:empg:"))

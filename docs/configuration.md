@@ -230,7 +230,7 @@ employees:
     name: Alikhan Khassen
     telegramUsername: realikh  # 5–32 chars, no @
     telegramUserId: 12345      # usually set by /start, not by hand
-    gender: male               # drives grammatical agreement in reminders
+    gender: male               # lets the chat address a woman in the feminine
     teamId: mobile-developers
     startedOn: 2025-01-15
     endedOn: 2026-08-07        # inclusive last working day

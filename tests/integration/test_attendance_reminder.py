@@ -21,7 +21,7 @@ from tabelshchik.application.send_attendance_reminder import (
     ReminderSkip,
     send_attendance_reminder,
 )
-from tabelshchik.application.voice import MoodPolicy, Voice, emoji_choices
+from tabelshchik.application.voice import MoodPolicy, Voice, mention
 from tabelshchik.bootstrap.mapping import catalog, silent_policy
 from tabelshchik.config.loader import parse_file
 from tabelshchik.config.messages import MessagesConfig
@@ -332,23 +332,38 @@ async def test_a_dry_run_renders_without_sending_or_freezing(office) -> None:
 # --------------------------------------------------------------------------- voice
 
 
-def decoration(tail: str, epithets: list[str], emojis: list[str] | None = None) -> str:
-    payload: dict[str, object] = {"tail": tail, "epithets": epithets}
-    if emojis is not None:
-        payload["emojis"] = emojis
-    return json.dumps(payload, ensure_ascii=False)
+def phrase(tail: str) -> str:
+    return json.dumps({"tail": tail}, ensure_ascii=False)
 
 
 async def test_the_ai_flavoured_intro_is_used_when_it_is_valid(office) -> None:
-    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"]))
+    model = StubChatModel(reply=phrase("кофе стынет"))
     notifier = RecordingNotifier()
 
     await remind(office, at(MONDAY), notifier, model=model)
 
     assert "Кофе стынет." in notifier.last_text
-    assert "Первый" in notifier.last_text
-    assert "Второй" in notifier.last_text
     assert model.json_requested == [True]
+
+
+async def test_a_roster_line_is_the_person_and_nothing_else(office) -> None:
+    notifier = RecordingNotifier()
+    await remind(office, at(MONDAY), notifier, model=StubChatModel(reply=phrase("кофе стынет")))
+
+    roster = SqlScheduleStore(office).day("ovest", TUESDAY).roster
+    people = {e.id: e for e in SqlOfficeStore(office).employees("ovest")}
+    expected = {
+        mention(
+            people[employee_id].full_name,
+            telegram_user_id=people[employee_id].telegram_user_id,
+            username=people[employee_id].telegram_username,
+        )
+        for employee_id in roster
+    }
+    lines = notifier.last_text.split("\n\n", 1)[1].splitlines()
+    assert roster
+    assert set(lines) == expected
+    assert len(lines) == len(roster)
 
 
 async def test_the_date_is_never_said_twice(office) -> None:
@@ -358,7 +373,7 @@ async def test_the_date_is_never_said_twice(office) -> None:
     14 сентября". It can no longer put a weekday anywhere: it is not given one, and a tail
     containing one is thrown away.
     """
-    model = StubChatModel(reply=decoration("в понедельник снова весело", ["Первый", "Второй"]))
+    model = StubChatModel(reply=phrase("в понедельник снова весело"))
     notifier = RecordingNotifier()
 
     await remind(office, at(FRIDAY), notifier, model=model)
@@ -368,7 +383,7 @@ async def test_the_date_is_never_said_twice(office) -> None:
 
 
 async def test_an_invented_colleague_falls_back_to_the_written_line(office) -> None:
-    model = StubChatModel(reply=decoration("особенно ждём Аню", ["Первый", "Второй"]))
+    model = StubChatModel(reply=phrase("особенно ждём Аню"))
     notifier = RecordingNotifier()
 
     await remind(office, at(MONDAY), notifier, model=model)
@@ -389,12 +404,12 @@ async def test_everyone_is_named_even_when_the_model_says_nothing(office) -> Non
     assert roster
     for employee_id in roster:
         assert names[employee_id] in notifier.last_text
-    # And each line carries a title, not a bare name.
+    # And each person has a line of their own, under the opening one.
     assert notifier.last_text.count("\n") >= len(roster) + 1
 
 
 async def test_the_model_never_learns_the_date_the_office_or_the_roster(office) -> None:
-    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"]))
+    model = StubChatModel(reply=phrase("кофе стынет"))
     await remind(office, at(MONDAY), notifier=RecordingNotifier(), model=model)
 
     everything = " ".join(part for prompt in model.prompts for part in prompt)
@@ -461,76 +476,3 @@ async def test_an_office_with_its_own_chat_gets_no_header(office) -> None:
     notifier = RecordingNotifier()
     await remind(office, at(MONDAY), notifier)
     assert not notifier.last_text.startswith("🏢")
-
-
-# ------------------------------------------------------------------------ the icons
-
-
-async def test_the_model_picks_the_icon_that_goes_with_the_title(office) -> None:
-    """The point of asking for them at all.
-
-    The icon used to be dealt from a pool seeded on the office and the day, so it had
-    nothing to do with the title beside it — ☕ never reached «Кофейный гений» — and two
-    renders of the same day produced different titles under identical icons.
-    """
-    first, second, *_ = emoji_choices(office_id="ovest", day=MONDAY)
-    model = StubChatModel(
-        reply=decoration("кофе стынет", ["Кофейный гений", "Второй"], [first, second])
-    )
-    notifier = RecordingNotifier()
-
-    await remind(office, at(MONDAY), notifier, model=model)
-
-    assert f"{first} Кофейный гений" in notifier.last_text
-    assert f"{second} Второй" in notifier.last_text
-
-
-async def test_an_icon_outside_the_allowlist_falls_back_to_the_pool(office) -> None:
-    """A work chat is not the place to discover what a model thinks is appropriate."""
-    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"], ["💀", "🍆"]))
-    notifier = RecordingNotifier()
-
-    await remind(office, at(MONDAY), notifier, model=model)
-
-    assert "💀" not in notifier.last_text
-    assert "🍆" not in notifier.last_text
-    assert "Первый" in notifier.last_text
-
-
-async def test_a_bad_icon_costs_only_its_own_slot(office) -> None:
-    """Per slot, like the titles: one bad answer should not throw away a good one."""
-    icon = emoji_choices(office_id="ovest", day=MONDAY)[0]
-    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"], [icon, "💀"]))
-    notifier = RecordingNotifier()
-
-    await remind(office, at(MONDAY), notifier, model=model)
-
-    assert f"{icon} Первый" in notifier.last_text
-    assert "💀" not in notifier.last_text
-
-
-async def test_no_icons_at_all_still_reminds_everybody(office) -> None:
-    """Decoration is optional; being reminded is not."""
-    model = StubChatModel(reply=decoration("кофе стынет", ["Первый", "Второй"]))
-    notifier = RecordingNotifier()
-
-    await remind(office, at(MONDAY), notifier, model=model)
-
-    assert "Первый" in notifier.last_text
-    assert "Второй" in notifier.last_text
-
-
-async def test_every_curated_icon_is_one_the_model_may_also_use() -> None:
-    """The pools are the icons somebody decided were fine for a work chat.
-
-    If the allowlist did not cover them, the fallback could print something the guard
-    would have rejected from the model — the same icon judged two different ways.
-    """
-    import yaml
-
-    from tabelshchik.application.voice import render_emoji
-
-    pools = yaml.safe_load(Path("config/messages.yaml").read_text("utf-8"))
-    for mood, icons in pools["attendance"]["emojis"].items():
-        rejected = [icon for icon in icons if render_emoji(icon) is None]
-        assert not rejected, f"{mood} pool has icons the guard would refuse: {rejected}"

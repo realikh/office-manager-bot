@@ -1,13 +1,13 @@
 """How the bot says things.
 
-Two rendering paths, in this order: hand-written lines per mood, and — when a model is
-available — an AI-written flavour clause and epithets in that mood. Anything the model
+Two rendering paths, in this order: hand-written lines per mood, and, when a model is
+available, an AI-written flavour clause in that mood. Anything the model
 returns must survive a set of guards; if it does not, the hand-written text is used and
 nobody ever finds out. The static corpus is therefore the floor on quality, and the bot
 keeps working with the AI switched off, broken, or out of credit.
 
 **The model is never handed a fact, and never handed a substitution token.** It writes a
-clause and some epithets, nothing else. Every date, weekday, office name and person is
+clause, nothing else. Every date, weekday, office name and person is
 placed by this module. That is a structural guarantee rather than a filter: a hallucinating
 model can produce an awkward phrase, but it cannot announce the wrong day, the wrong
 office, a person who is not on the roster, or the same weekday twice.
@@ -18,7 +18,7 @@ from __future__ import annotations
 import html
 import json
 import re
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import date
 
@@ -37,8 +37,6 @@ MAX_TAIL_LENGTH = 160
 #: A whole message this time — a greeting or a Tempo nag — but still a chat message, not
 #: an essay the whole office scrolls past.
 MAX_ANNOUNCEMENT_LENGTH = 500
-#: An epithet is a title, not a sentence.
-MAX_EPITHET_LENGTH = 48
 
 _BRACE = re.compile(r"[{}]")
 _DIGIT = re.compile(r"\d")
@@ -86,29 +84,12 @@ class Catalog:
 
     common: CommonText
     variants: Mapping[str, Mapping[Mood, tuple[str, ...]]] = field(default_factory=dict)
-    gendered: Mapping[str, Mapping[Mood, Mapping[str, tuple[str, ...]]]] = field(
-        default_factory=dict
-    )
     per_mood: Mapping[str, Mapping[Mood, str]] = field(default_factory=dict)
     plain: Mapping[str, str] = field(default_factory=dict)
 
     def variant(self, key: str, mood: Mood, *, office_id: str, day: date, nonce: int = 0) -> str:
         lines = self._lines(key, mood)
         index = variant_index(office_id=office_id, day=day, kind=key, count=len(lines), nonce=nonce)
-        return lines[index]
-
-    def gendered_variant(
-        self, key: str, mood: Mood, gender: str, *, office_id: str, day: date, nonce: int = 0
-    ) -> str:
-        by_gender = self.gendered.get(key, {}).get(mood) or self.gendered.get(key, {}).get(
-            SAFE_MOOD, {}
-        )
-        lines = by_gender.get(gender) or by_gender.get("male") or ()
-        if not lines:
-            raise KeyError(f"no {gender} lines configured for {key!r}")
-        index = variant_index(
-            office_id=office_id, day=day, kind=f"{key}:{gender}", count=len(lines), nonce=nonce
-        )
         return lines[index]
 
     def pool(self, key: str, mood: Mood) -> tuple[str, ...]:
@@ -139,21 +120,6 @@ class MoodPolicy:
         if not self.enabled or self.safe_mode:
             return SAFE_MOOD
         return pick_mood(self.weights, office_id=office_id, day=day, nonce=nonce)
-
-
-@dataclass(frozen=True, slots=True)
-class Decoration:
-    """What the model contributed to one reminder: a clause, and one title per person.
-
-    ``epithets`` and ``emojis`` are always exactly as long as the roster. Slots the model
-    did not fill, or filled badly, hold a hand-written title and an icon from the mood's
-    own pool instead — so the roster loop never has to ask whether the AI worked.
-    """
-
-    tail: str
-    epithets: tuple[str, ...]
-    #: One per person, same length and the same per-slot fallback rule as `epithets`.
-    emojis: tuple[str, ...] = ()
 
 
 def office_header(office_name: str, common: CommonText) -> str:
@@ -310,9 +276,8 @@ def _as_sentence(line: str) -> str:
     return line if line[-1] in _SENTENCE_END else line + "."
 
 
-#: What the model may put in front of a name. An allowlist, not a pattern check: an
-#: emoji that matches its title is the whole point, but a work chat is not the place to
-#: discover what a model considers appropriate. Grouped by what a title might be about.
+#: The icons the model is offered. An allowlist, not a pattern check: a work chat is not
+#: the place to discover what a model considers appropriate.
 SAFE_EMOJI: frozenset[str] = frozenset(
     # Coffee, food, the morning
     "☕🍵🧋🍩🥐🥪🍫🧃🍪"
@@ -328,99 +293,23 @@ SAFE_EMOJI: frozenset[str] = frozenset(
     "⚡🔥🚀🎉🎯🎲🏆🥇🎪🎨🎸"
     # Nature, quiet things
     "🌱🌳🍀🌵🪴🐝🦉🐢🦫"
-    # For the moods that are not cheerful. The pools already use these, and the model
-    # should be able to reach for them when the persona is sad or depressive.
+    # For the moods that are not cheerful
     "🫠🕳📉⏳🕯🧊🪫"
-    # Odds and ends a title might reach for
+    # Odds and ends
     "🔧🔑🧩🔍💡📖🧠🎩🪄🧭"
 )
 
-MAX_EMOJI_LENGTH = 4
 EMOJI_CHOICES = 20
 ANNOUNCEMENT_EMOJI_CHOICES = 8
 
 
-def emoji_choices(*, office_id: str, day: date, count: int = 0) -> tuple[str, ...]:
+def emoji_choices(*, office_id: str, day: date) -> tuple[str, ...]:
     from tabelshchik.domain.rng import stable_hash
 
     ranked = sorted(
         SAFE_EMOJI, key=lambda icon: stable_hash("emoji-choices", office_id, day.isoformat(), icon)
     )
-    return tuple(ranked[: max(EMOJI_CHOICES, count)])
-
-
-def render_emoji(raw: str, allowed: Collection[str] = SAFE_EMOJI) -> str | None:
-    """One emoji from the allowlist, or None so the caller can fall back.
-
-    Length is checked before membership because a variation selector or a skin-tone
-    modifier makes a string that looks like one character and is not the one we allow.
-    """
-    text = raw.strip()
-    if not text or len(text) > MAX_EMOJI_LENGTH:
-        return None
-    # Trim the variation selector some models append; ️ renders identically.
-    stripped = text.replace("\ufe0f", "")
-    return stripped if stripped in allowed else None
-
-
-def render_epithet(
-    raw: str,
-    *,
-    gender: str = "male",
-    office_name: str,
-    common: CommonText,
-    forbidden: Iterable[str] = (),
-    banned_terms: Iterable[str] = (),
-    max_length: int = MAX_EPITHET_LENGTH,
-) -> str | None:
-    """A title, not a sentence: a couple of words, no punctuation to speak of."""
-    line = _collapse(raw).rstrip(" .,;:!?")
-    if not line or len(line) > max_length:
-        return None
-    if len(line.split()) > 4:
-        return None
-    if not _agrees(line, gender):
-        return None
-    if not _is_clean(
-        line, office_name=office_name, common=common, forbidden=forbidden, banned_terms=banned_terms
-    ):
-        return None
-    if _is_shouting(line):
-        return None
-    return html.escape(line)
-
-
-#: Russian adjective endings, which are the reliable half of the agreement signal.
-_MASCULINE_ENDINGS = ("ый", "ий", "ой")
-_FEMININE_ENDINGS = ("ая", "яя")
-_VOWEL_OR_SOFT = "аяеёиоуыэюь"
-
-
-def _agrees(line: str, gender: str) -> bool:
-    """Does this title agree in gender with the person it is about?
-
-    The model is told which gender each slot needs and mostly complies, but "Мужик" in
-    front of a woman's name is the kind of mistake nobody wants to see in a group chat —
-    so it is checked rather than trusted.
-
-    A heuristic, and deliberately a strict one: it looks at the head word's ending, which
-    is unambiguous for adjectives, and treats a lone masculine-looking noun as a
-    mismatch. Over-rejecting costs one hand-written title that reads just as well.
-    """
-    words = _WORD.findall(line.casefold())
-    if not words:
-        return False
-    head = words[0]
-
-    if gender == "female":
-        if head.endswith(_MASCULINE_ENDINGS):
-            return False
-        # "Мужик", "Защитник" — a bare noun ending in a hard consonant.
-        return not (len(words) == 1 and head[-1] not in _VOWEL_OR_SOFT)
-
-    if head.endswith(_FEMININE_ENDINGS):
-        return False
-    return not (len(words) == 1 and head[-1] in "ая")
+    return tuple(ranked[:EMOJI_CHOICES])
 
 
 def _is_clean(
@@ -675,108 +564,40 @@ class Voice:
         )
         return Announcement(cleaned, generated=True) if cleaned else Announcement(fallback)
 
-    def emojis(self, mood: Mood, *, office_id: str, day: date, count: int) -> tuple[str, ...]:
-        """One per person, distinct while the pool lasts.
-
-        Picked by shuffling the pool rather than by hashing each index independently:
-        independent picks collide, and two identical icons three lines apart look like a
-        bug rather than like decoration.
-        """
-        from tabelshchik.domain.rng import stable_hash
-
-        pool = self.catalog.pool("attendance.emojis", mood)
-        order = sorted(
-            range(len(pool)),
-            key=lambda index: stable_hash("emoji", office_id, day.isoformat(), str(index)),
-        )
-        return tuple(pool[order[index % len(pool)]] for index in range(count))
-
-    def fallback_epithet(
-        self, mood: Mood, gender: str, *, office_id: str, day: date, nonce: int
-    ) -> str:
-        return html.escape(
-            self.catalog.gendered_variant(
-                "attendance.epithets", mood, gender, office_id=office_id, day=day, nonce=nonce
-            )
-        )
-
-    async def decorate(
+    async def tail(
         self,
         mood: Mood,
         *,
         office_id: str,
         office_name: str,
         day: date,
-        genders: Sequence[str],
         forbidden: Sequence[str] = (),
-    ) -> Decoration:
-        """The flavour clause and one epithet per person, in a single request.
-
-        One call rather than two: the tail and the epithets are wanted at the same moment
-        for the same message, and folding them together halves what the reminder costs.
-        """
-        fallback = Decoration(
-            tail=self._static_tail(mood, office_id=office_id, day=day),
-            epithets=tuple(
-                self.fallback_epithet(mood, gender, office_id=office_id, day=day, nonce=index)
-                for index, gender in enumerate(genders)
-            ),
-            emojis=self.emojis(mood, office_id=office_id, day=day, count=len(genders)),
-        )
-
+    ) -> str:
+        fallback = self._static_tail(mood, office_id=office_id, day=day)
         persona = self.catalog.line("ai.persona", mood)
         if self.model is None or not self.moods.enabled or not persona:
             return fallback
 
-        choices = emoji_choices(office_id=office_id, day=day, count=len(genders))
         completion = await self.model.complete(
-            _decoration_system_prompt(persona, choices),
-            _decoration_user_prompt(genders),
+            _tail_system_prompt(persona, emoji_choices(office_id=office_id, day=day)),
+            TAIL_REQUEST,
             max_tokens=self.max_tokens,
             temperature=self.temperature,
             json_object=True,
         )
-        if completion is None:
+        payload = _parse_json(completion.text) if completion is not None else None
+        raw = payload.get("tail") if payload is not None else None
+        if not isinstance(raw, str):
             return fallback
 
-        payload = _parse_json(completion.text)
-        if payload is None:
-            return fallback
-
-        def clean_tail(raw: str) -> str | None:
-            return render_tail(
-                raw,
-                office_name=office_name,
-                common=self.catalog.common,
-                forbidden=forbidden,
-                banned_terms=self.moods.banned_terms,
-            )
-
-        def clean_epithet(raw: str, gender: str) -> str | None:
-            return render_epithet(
-                raw,
-                gender=gender,
-                office_name=office_name,
-                common=self.catalog.common,
-                forbidden=forbidden,
-                banned_terms=self.moods.banned_terms,
-            )
-
-        tail = clean_tail(str(payload.get("tail", ""))) or fallback.tail
-
-        raw_epithets = payload.get("epithets")
-        offered = raw_epithets if isinstance(raw_epithets, list) else []
-        epithets = tuple(
-            # Per slot, not all-or-nothing: a model that titles one person well and
-            # fumbles the next should cost us only the second title.
-            _offered(offered, index, gender, clean_epithet) or fallback.epithets[index]
-            for index, gender in enumerate(genders)
+        cleaned = render_tail(
+            raw,
+            office_name=office_name,
+            common=self.catalog.common,
+            forbidden=forbidden,
+            banned_terms=self.moods.banned_terms,
         )
-
-        raw_emojis = payload.get("emojis")
-        icons = raw_emojis if isinstance(raw_emojis, list) else []
-        emojis = _distinct_emojis(icons, choices, fallback.emojis)
-        return Decoration(tail=tail, epithets=epithets, emojis=emojis)
+        return cleaned or fallback
 
     def _static_tail(self, mood: Mood, *, office_id: str, day: date) -> str:
         line = self.catalog.variant("attendance.tails", mood, office_id=office_id, day=day)
@@ -789,27 +610,6 @@ class Announcement:
     text: str
     #: Whether the model wrote it, as opposed to the hand-written fallback.
     generated: bool = False
-
-
-def _offered(
-    values: list[object], index: int, gender: str, clean: Callable[[str, str], str | None]
-) -> str | None:
-    if index >= len(values) or not isinstance(values[index], str):
-        return None
-    return clean(str(values[index]), gender)
-
-
-def _distinct_emojis(
-    offered: list[object], choices: Sequence[str], spare: Sequence[str]
-) -> tuple[str, ...]:
-    chosen: list[str] = []
-    for index, own in enumerate(spare):
-        raw = offered[index] if index < len(offered) else None
-        icon = render_emoji(raw, choices) if isinstance(raw, str) else None
-        if icon is None or icon in chosen:
-            icon = next((item for item in (own, *spare, *choices) if item not in chosen), own)
-        chosen.append(icon)
-    return tuple(chosen)
 
 
 def _parse_json(raw: str) -> dict[str, object] | None:
@@ -825,34 +625,21 @@ def _parse_json(raw: str) -> dict[str, object] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def _decoration_system_prompt(persona: str, choices: Sequence[str]) -> str:
+TAIL_REQUEST = "Напиши фразу для сегодняшнего напоминания."
+
+
+def _tail_system_prompt(persona: str, choices: Sequence[str]) -> str:
     return (
         f"{persona}\n\n"
         "Ты оформляешь ежедневное напоминание о выходе в офис. Даты, имена и название "
         "офиса подставляются автоматически — тебе их не сообщают и упоминать их нельзя.\n"
-        "Верни СТРОГО JSON вида: "
-        '{"emojis": ["...", "..."], "epithets": ["...", "..."], "tail": "..."}\n'
-        "emojis — сначала выбери по одному эмодзи на каждый титул, все разные, только из "
-        f"сегодняшнего набора: {' '.join(choices)}\n"
-        "epithets — шуточные титулы по 1–3 слова, ровно столько же, сколько указано, "
-        "и строго в том же порядке и роде. Каждый титул придумай по смыслу его эмодзи, "
-        "и не первый, что приходит в голову.\n"
+        'Верни СТРОГО JSON вида: {"tail": "..."}\n'
         "tail — одна короткая фраза (3–12 слов) в твоём настроении. Она встанет в конец "
-        "вступительной строки. Пусть её тоже подскажет сегодняшний набор, а не привычные "
-        "темы.\n"
-        "Запрещено в tail и epithets: числа и цифры, даты, дни недели, месяцы, названия "
-        "офисов, имена людей, @упоминания, эмодзи, разметка, капслок.\n"
-        "Титулы — только доброжелательно-шуточные. Никогда про внешность, "
-        "компетентность, здоровье или личную жизнь."
+        "вступительной строки. Пусть её подскажет сегодняшний набор образов, а не привычные "
+        f"темы: {' '.join(choices)}\n"
+        "Запрещено в tail: числа и цифры, даты, дни недели, месяцы, названия офисов, имена "
+        "людей, @упоминания, эмодзи, разметка, капслок."
     )
-
-
-def _decoration_user_prompt(genders: Sequence[str]) -> str:
-    listed = ", ".join(
-        f"{index + 1}) {'женский' if gender == 'female' else 'мужской'} род"
-        for index, gender in enumerate(genders)
-    )
-    return f"Нужно {len(genders)} титулов. Род по порядку: {listed}."
 
 
 def _announcement_system_prompt(persona: str, choices: Sequence[str]) -> str:

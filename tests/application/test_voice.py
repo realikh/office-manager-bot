@@ -23,8 +23,6 @@ from tabelshchik.application.voice import (
     plural_minutes,
     render_announcement,
     render_days,
-    render_emoji,
-    render_epithet,
     render_tail,
     render_template,
 )
@@ -52,12 +50,6 @@ COMMON = CommonText(
     on_weekday="В {weekday}",
 )
 
-EPITHETS = {
-    "attendance.epithets": {
-        mood: {"male": (f"[{mood.value}-м]",), "female": (f"[{mood.value}-ж]",)} for mood in Mood
-    }
-}
-
 
 def catalog(**variants) -> Catalog:
     base = {
@@ -65,23 +57,17 @@ def catalog(**variants) -> Catalog:
             mood: (f"[{mood.value}] {{when}}, {{date}}, {{office}}. {{tail}}",) for mood in Mood
         },
         "attendance.tails": {mood: (f"[запасной-{mood.value}]",) for mood in Mood},
-        "attendance.emojis": dict.fromkeys(Mood, ("•",)),
     }
     base.update(variants)
     return Catalog(
         common=COMMON,
         variants=base,
-        gendered=EPITHETS,
         per_mood={"ai.persona": dict.fromkeys(Mood, "Ты — Табельщик.")},
     )
 
 
 def tail(raw: str, **kwargs) -> str | None:
     return render_tail(raw, office_name="O'Vest", common=COMMON, **kwargs)
-
-
-def epithet(raw: str, **kwargs) -> str | None:
-    return render_epithet(raw, office_name="O'Vest", common=COMMON, **kwargs)
 
 
 # ------------------------------------------------------------------------ formatting
@@ -213,44 +199,6 @@ def test_a_multiline_answer_is_collapsed_rather_than_rejected() -> None:
     assert tail("кофемашина\n уже   нервничает") == "Кофемашина уже нервничает."
 
 
-# --------------------------------------------------------------------- epithet guards
-
-
-def test_a_well_formed_epithet_is_accepted() -> None:
-    assert epithet("Несгибаемый защитник") == "Несгибаемый защитник"
-
-
-def test_trailing_punctuation_is_trimmed_from_an_epithet() -> None:
-    assert epithet("Герой света.") == "Герой света"
-
-
-def test_a_sentence_is_not_an_epithet() -> None:
-    assert epithet("Этот человек всегда приходит первым и уходит последним") is None
-
-
-def test_an_epithet_may_not_carry_a_fact() -> None:
-    assert epithet("Ветеран 5 лет") is None
-    assert epithet("Герой понедельника") is None
-
-
-def test_a_masculine_title_is_refused_for_a_woman() -> None:
-    """The model is told which gender each slot needs and mostly complies. "Мужик" in
-    front of a woman's name is not a mistake worth showing to a group chat."""
-    assert epithet("Несгибаемый защитник", gender="female") is None
-    assert epithet("Мужик", gender="female") is None
-
-
-def test_a_feminine_title_is_refused_for_a_man() -> None:
-    assert epithet("Главная по настроению", gender="male") is None
-
-
-def test_agreeing_titles_are_accepted_either_way() -> None:
-    assert epithet("Стальная оптимистка", gender="female") == "Стальная оптимистка"
-    assert epithet("Душа компании", gender="female") == "Душа компании"
-    assert epithet("Несгибаемый защитник", gender="male") == "Несгибаемый защитник"
-    assert epithet("Герой света", gender="male") == "Герой света"
-
-
 # ----------------------------------------------------------------- the day-list render
 
 
@@ -318,16 +266,6 @@ def test_an_unknown_key_fails_loudly() -> None:
         catalog().variant("nope", Mood.TOXIC, office_id="ovest", day=DAY)
 
 
-def test_epithets_are_chosen_by_gender() -> None:
-    cat = catalog()
-    assert (
-        cat.gendered_variant(
-            "attendance.epithets", Mood.TOXIC, "female", office_id="ovest", day=DAY
-        )
-        == "[toxic-ж]"
-    )
-
-
 # ------------------------------------------------------------------ the Voice façade
 
 
@@ -345,76 +283,49 @@ def voice(model) -> Voice:
     return Voice(catalog=catalog(), moods=MoodPolicy(weights=dict.fromkeys(Mood, 1)), model=model)
 
 
-async def decorate(model, mood=Mood.TOXIC, genders=("male", "female"), **kwargs):
-    return await voice(model).decorate(
-        mood,
-        office_id="ovest",
-        office_name="O'Vest",
-        day=DAY,
-        genders=list(genders),
-        **kwargs,
-    )
+async def phrase(model, mood=Mood.TOXIC, **kwargs) -> str:
+    return await voice(model).tail(mood, office_id="ovest", office_name="O'Vest", day=DAY, **kwargs)
 
 
-def reply(tail_text: str, epithets: list[str]) -> str:
-    return json.dumps({"tail": tail_text, "epithets": epithets}, ensure_ascii=False)
+def reply(tail_text: str) -> str:
+    return json.dumps({"tail": tail_text}, ensure_ascii=False)
 
 
 async def test_a_good_model_reply_is_used() -> None:
-    result = await decorate(StubModel(reply("кофе стынет", ["Герой света", "Душа компании"])))
-    assert result.tail == "Кофе стынет."
-    assert result.epithets == ("Герой света", "Душа компании")
+    assert await phrase(StubModel(reply("кофе стынет"))) == "Кофе стынет."
 
 
-async def test_a_bad_tail_falls_back_but_good_epithets_survive() -> None:
-    result = await decorate(StubModel(reply("снова понедельник", ["Герой света", "Душа компании"])))
-    assert result.tail == "[запасной-toxic]."
-    assert result.epithets == ("Герой света", "Душа компании")
-
-
-async def test_one_bad_epithet_costs_only_that_slot() -> None:
-    result = await decorate(StubModel(reply("кофе стынет", ["Ветеран 5 лет", "Душа компании"])))
-    assert result.epithets == ("[toxic-м]", "Душа компании")
-
-
-async def test_too_few_epithets_are_topped_up_from_the_written_ones() -> None:
-    """The roster is what decides how many lines there are, never the model."""
-    result = await decorate(StubModel(reply("кофе стынет", ["Герой света"])))
-    assert result.epithets == ("Герой света", "[toxic-ж]")
+async def test_a_bad_phrase_falls_back_to_the_written_one() -> None:
+    assert await phrase(StubModel(reply("снова понедельник"))) == "[запасной-toxic]."
 
 
 async def test_a_model_failure_falls_back_silently() -> None:
-    result = await decorate(StubModel(None))
-    assert result.tail == "[запасной-toxic]."
-    assert result.epithets == ("[toxic-м]", "[toxic-ж]")
+    assert await phrase(StubModel(None)) == "[запасной-toxic]."
 
 
 async def test_prose_instead_of_json_falls_back() -> None:
-    result = await decorate(StubModel("Конечно! Вот ваша строка."))
-    assert result.tail == "[запасной-toxic]."
+    assert await phrase(StubModel("Конечно! Вот ваша строка.")) == "[запасной-toxic]."
 
 
 async def test_json_in_a_code_fence_is_still_read() -> None:
-    fenced = "```json\n" + reply("кофе стынет", ["Герой света", "Душа компании"]) + "\n```"
-    assert (await decorate(StubModel(fenced))).tail == "Кофе стынет."
+    fenced = "```json\n" + reply("кофе стынет") + "\n```"
+    assert await phrase(StubModel(fenced)) == "Кофе стынет."
 
 
 async def test_a_hand_written_tail_is_punctuated_like_a_generated_one() -> None:
     """The tail closes the opening sentence either way, so it has to end like one."""
-    assert (await decorate(None)).tail.endswith(".")
+    assert (await phrase(None)).endswith(".")
 
 
 async def test_without_a_model_the_hand_written_text_is_used() -> None:
-    result = await decorate(None)
-    assert result.tail == "[запасной-toxic]."
-    assert result.epithets == ("[toxic-м]", "[toxic-ж]")
+    assert await phrase(None) == "[запасной-toxic]."
 
 
 async def test_the_model_is_never_told_the_date_the_office_or_a_name() -> None:
     """The guard that makes a hallucination harmless: it cannot state a fact it was
     never given."""
-    model = StubModel(reply("кофе стынет", ["Герой света", "Душа компании"]))
-    await decorate(model, forbidden=["Alikhan Khassen"])
+    model = StubModel(reply("кофе стынет"))
+    await phrase(model, forbidden=["Alikhan Khassen"])
 
     system, user = model.calls[0]
     prompt = system + user
@@ -426,41 +337,20 @@ async def test_the_model_is_never_told_the_date_the_office_or_a_name() -> None:
 
 
 async def test_the_prompt_carries_the_mood_persona() -> None:
-    model = StubModel(reply("кофе стынет", []))
-    await decorate(model, mood=Mood.DEPRESSIVE)
+    model = StubModel(reply("кофе стынет"))
+    await phrase(model, mood=Mood.DEPRESSIVE)
     assert "Табельщик" in model.calls[0][0]
 
 
-async def test_the_prompt_asks_for_the_right_genders_in_order() -> None:
-    model = StubModel(reply("кофе стынет", []))
-    await decorate(model, genders=("female", "male"))
-    assert "1) женский род, 2) мужской род" in model.calls[0][1]
+async def test_the_model_is_asked_for_the_phrase_and_no_titles() -> None:
+    model = StubModel(reply("кофе стынет"))
+    await phrase(model)
 
-
-async def test_each_person_gets_a_different_emoji() -> None:
-    """Two identical icons three lines apart look like a bug rather than decoration."""
-    pool = ("a", "b", "c", "d", "e")
-    voice_with_pool = Voice(
-        catalog=catalog(**{"attendance.emojis": dict.fromkeys(Mood, pool)}),
-        moods=MoodPolicy(weights=dict.fromkeys(Mood, 1)),
-    )
-    chosen = voice_with_pool.emojis(Mood.TOXIC, office_id="ovest", day=DAY, count=5)
-    assert len(set(chosen)) == 5
-
-
-async def test_more_people_than_emoji_simply_wraps() -> None:
-    voice_with_pool = Voice(
-        catalog=catalog(**{"attendance.emojis": dict.fromkeys(Mood, ("a", "b"))}),
-        moods=MoodPolicy(weights=dict.fromkeys(Mood, 1)),
-    )
-    assert len(voice_with_pool.emojis(Mood.TOXIC, office_id="ovest", day=DAY, count=5)) == 5
-
-
-def icons_reply(*icons: str) -> str:
-    return json.dumps(
-        {"tail": "кофе стынет", "epithets": ["Герой света", "Душа компании"], "emojis": icons},
-        ensure_ascii=False,
-    )
+    system, user = model.calls[0]
+    assert '{"tail": "..."}' in system
+    assert "epithets" not in system
+    assert "титул" not in system
+    assert user
 
 
 def test_the_icons_on_offer_change_from_day_to_day() -> None:
@@ -471,15 +361,9 @@ def test_the_icons_on_offer_change_from_day_to_day() -> None:
     assert emoji_choices(office_id="ovest", day=DAY + timedelta(days=1)) != today
 
 
-def test_a_big_day_is_offered_an_icon_for_everybody() -> None:
-    assert len(emoji_choices(office_id="ovest", day=DAY, count=EMOJI_CHOICES + 5)) == (
-        EMOJI_CHOICES + 5
-    )
-
-
 async def test_the_prompt_offers_only_todays_icons_and_names_no_topics() -> None:
-    model = StubModel(icons_reply())
-    await decorate(model)
+    model = StubModel(reply("кофе стынет"))
+    await phrase(model)
 
     system = model.calls[0][0]
     offered = set(emoji_choices(office_id="ovest", day=DAY))
@@ -489,56 +373,12 @@ async def test_the_prompt_offers_only_todays_icons_and_names_no_topics() -> None
     assert "дорог" not in system.lower()
 
 
-async def test_an_icon_the_model_repeats_is_replaced() -> None:
-    icon = emoji_choices(office_id="ovest", day=DAY)[0]
-    result = await decorate(StubModel(icons_reply(icon, icon)))
-    assert result.emojis[0] == icon
-    assert len(set(result.emojis)) == 2
-
-
-async def test_an_icon_from_outside_todays_set_is_refused() -> None:
-    outside = sorted(SAFE_EMOJI - set(emoji_choices(office_id="ovest", day=DAY)))[0]
-    inside = emoji_choices(office_id="ovest", day=DAY)[1]
-    result = await decorate(StubModel(icons_reply(outside, inside)))
-    assert result.emojis == ("•", inside)
-
-
 async def test_every_mood_produces_usable_text_without_a_model() -> None:
     for mood in Mood:
-        result = await decorate(None, mood=mood)
-        assert result.tail == f"[запасной-{mood.value}]."
-        assert result.epithets == (f"[{mood.value}-м]", f"[{mood.value}-ж]")
+        assert await phrase(None, mood=mood) == f"[запасной-{mood.value}]."
 
 
-# ---------------------------------------------------------------------- emoji guard
-
-
-def test_an_emoji_from_the_allowlist_is_kept() -> None:
-    assert render_emoji("☕") == "☕"
-    assert render_emoji(" 🚗 ") == "🚗"
-
-
-def test_a_variation_selector_is_trimmed_rather_than_refused() -> None:
-    """Models append U+FE0F freely and it renders identically; refusing it would send
-    perfectly good answers to the fallback for an invisible reason."""
-    assert render_emoji("☕️") == "☕"
-
-
-@pytest.mark.parametrize(
-    "raw",
-    [
-        "💀",  # not in the allowlist
-        "🍆",  # nor this, for reasons a work chat should not have to discover
-        "🇰🇿",  # a flag: two codepoints, and a political statement in some rooms
-        "👍🏽",  # a skin-tone modifier, which is not ours to assign to somebody
-        "☕☕",  # two is not one
-        "abc",
-        "",
-        "   ",
-    ],
-)
-def test_anything_else_is_refused_so_the_caller_can_fall_back(raw: str) -> None:
-    assert render_emoji(raw) is None
+# -------------------------------------------------------------------- the icon allowlist
 
 
 def test_the_allowlist_holds_single_codepoints_only() -> None:
